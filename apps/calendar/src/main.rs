@@ -3,6 +3,7 @@
 mod actions;
 mod agenda;
 mod control;
+mod online_check;
 mod days;
 mod details;
 mod draw;
@@ -62,6 +63,9 @@ fn main() -> glib::ExitCode {
     if args.iter().any(|a| a == "--help" || a == "-h") {
         print!("{USAGE}");
         return glib::ExitCode::SUCCESS;
+    }
+    if args.iter().any(|a|a=="--check-online-extended") {
+        return match online_check::extended() { Ok(())=>glib::ExitCode::SUCCESS,Err(e)=>{eprintln!("Calendar extended check: {e}");glib::ExitCode::FAILURE} };
     }
     if args.iter().any(|a| a == "--check-online") {
         if std::env::var("NYX_ACCOUNTS_PREVIEW").as_deref() != Ok("1") {
