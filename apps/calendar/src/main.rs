@@ -63,6 +63,16 @@ fn main() -> glib::ExitCode {
         print!("{USAGE}");
         return glib::ExitCode::SUCCESS;
     }
+    if args.iter().any(|a| a == "--check-online") {
+        if std::env::var("NYX_ACCOUNTS_PREVIEW").as_deref() != Ok("1") {
+            eprintln!("This diagnostic is available only in the isolated account preview");
+            return glib::ExitCode::FAILURE;
+        }
+        return match nyx_eds::Registry::connect().and_then(|r|r.refresh_accounts(nyx_accounts::Service::Calendar)) {
+            Ok(()) => { println!("Google Calendar synchronization completed"); glib::ExitCode::SUCCESS }
+            Err(e) => { eprintln!("Calendar synchronization: {e}"); glib::ExitCode::FAILURE }
+        };
+    }
     // The control tools as JSON, without a window (Nyx Assistant's abilities).
     if args.iter().any(|a| a == "--describe") {
         println!("{}", control::tools());
