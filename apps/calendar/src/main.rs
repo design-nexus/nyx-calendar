@@ -36,6 +36,13 @@ const USAGE: &str = "Usage: nyx-calendar [OPTIONS] [FILE.ics...]\n\
 /// Starts the reminders service if it's installed and not running (it's enabled
 /// for login by the installer, which doesn't start it).
 fn start_reminders() {
+    if std::env::var_os("NYX_ACCOUNTS_PREVIEW").is_some() {
+        if let Ok(exe) = std::env::current_exe() {
+            let _ = std::process::Command::new(exe.with_file_name("nyx-calendard"))
+                .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
+        }
+        return;
+    }
     if std::env::var_os("CALENDAR_SNAPSHOT").is_some() {
         return;
     }
