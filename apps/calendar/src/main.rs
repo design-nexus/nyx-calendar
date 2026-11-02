@@ -32,6 +32,7 @@ const USAGE: &str = "Usage: nyx-calendar [OPTIONS] [FILE.ics...]\n\
   --section ID    open day, week, month, year, agenda or settings\n\
   --date DAY      show that day (YYYY-MM-DD)\n\
   --toggle        close the window if it's open, otherwise open it\n\
+  --sync-online   synchronize enabled accounts without opening a window\n\
   --describe      print the control tools (JSON) and exit\n";
 
 /// Starts the reminders service if it's installed and not running (it's enabled
@@ -67,11 +68,7 @@ fn main() -> glib::ExitCode {
     if args.iter().any(|a|a=="--check-online-extended") {
         return match online_check::extended() { Ok(())=>glib::ExitCode::SUCCESS,Err(e)=>{eprintln!("Calendar extended check: {e}");glib::ExitCode::FAILURE} };
     }
-    if args.iter().any(|a| a == "--check-online") {
-        if std::env::var("NYX_ACCOUNTS_PREVIEW").as_deref() != Ok("1") {
-            eprintln!("This diagnostic is available only in the isolated account preview");
-            return glib::ExitCode::FAILURE;
-        }
+    if args.iter().any(|a| a == "--check-online" || a == "--sync-online") {
         return match nyx_eds::Registry::connect().and_then(|r|r.refresh_accounts(nyx_accounts::Service::Calendar)) {
             Ok(()) => { println!("Google Calendar synchronization completed"); glib::ExitCode::SUCCESS }
             Err(e) => { eprintln!("Calendar synchronization: {e}"); glib::ExitCode::FAILURE }
