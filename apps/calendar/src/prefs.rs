@@ -42,6 +42,8 @@ pub struct Prefs {
     pub open_view: String,
     /// Accounts whose calendars are folded away in the sidebar (by heading).
     pub collapsed_groups: Vec<String>,
+    /// The imported snapshot's calendars were folded away the first time they showed.
+    pub imported_folded_once: bool,
 }
 
 /// Calendars shown together ("Work", "Family").
@@ -76,6 +78,7 @@ impl Default for Prefs {
             show_declined: true,
             open_view: "week".into(),
             collapsed_groups: Vec::new(),
+            imported_folded_once: false,
         }
     }
 }

@@ -1,5 +1,5 @@
-//! The Calendar window. The sidebar follows Music: it does not grow, and it
-//! collapses to icons under 980 px or when the user collapses it.
+//! The Calendar window. The sidebar does not grow; the user can hide it, and
+//! under 980 px it slides over the calendar from the header's sidebar button.
 
 use crate::actions;
 use crate::agenda::AgendaView;
@@ -38,8 +38,8 @@ pub const SHORTCUTS: &[(&[&str], &str)] = &[
     (&["R"], "Refresh calendars"),
     (&["Ctrl", "F"], "Find events (Enter searches the year)"),
     (&["Ctrl", "I"], "Import an .ics file"),
-    (&["Esc"], "Clear the search"),
-    (&["Ctrl", "B"], "Collapse or expand sidebar"),
+    (&["Esc"], "Clear the search or close the sidebar"),
+    (&["Ctrl", "B"], "Show or hide the sidebar"),
     (&["Ctrl", ","], "Settings"),
     (&["F1"], "Show keyboard shortcuts"),
     (&["Ctrl", "Q"], "Close"),
@@ -96,6 +96,16 @@ struct Ui {
     overlay: gtk::Overlay,
     nav: gtk::Box,
     nav_list: gtk::Box,
+    nav_scroll: gtk::ScrolledWindow,
+    nav_toggle: gtk::Button,
+    /// Each online account's provider and address, by account id, for the headings.
+    account_info: std::collections::HashMap<String, (String, String)>,
+    /// Holds the sidebar beside the calendar on wide windows.
+    body: gtk::Box,
+    /// Holds the sidebar over the calendar on narrow windows.
+    drawer: gtk::Revealer,
+    scrim: gtk::Revealer,
+    sidebar_button: gtk::Button,
     search: gtk::SearchEntry,
     banners: gtk::Box,
     title: gtk::Label,
@@ -125,6 +135,7 @@ struct Ui {
 thread_local! {
     static UI: RefCell<Option<Rc<RefCell<Ui>>>> = const { RefCell::new(None) };
     static NARROW: Cell<bool> = const { Cell::new(false) };
+    static DRAWER_OPEN: Cell<bool> = const { Cell::new(false) };
     static TOAST: RefCell<Option<gtk::Box>> = const { RefCell::new(None) };
     static STATUS: RefCell<Option<gtk::Label>> = const { RefCell::new(None) };
 }
@@ -139,6 +150,11 @@ pub fn window() -> Option<gtk::ApplicationWindow> {
 
 pub fn overlay() -> Option<gtk::Overlay> {
     ui().map(|u| u.borrow().overlay.clone())
+}
+
+/// The sidebar, which holds its cards so they outlive the rows they open from.
+pub fn nav() -> Option<gtk::Box> {
+    ui().map(|u| u.borrow().nav.clone())
 }
 
 pub fn calendars() -> Vec<CalendarInfo> {
@@ -193,6 +209,10 @@ pub fn present(app: &gtk::Application, section: Option<&str>) {
     }
     match section {
         Some("settings") => settings_dialog::open(),
+        Some("accounts") => {
+            settings_dialog::open();
+            nyx_ui::settings_card::select("Accounts");
+        }
         Some(id @ ("day" | "week" | "month" | "year" | "agenda")) => set_view(ViewKind::from_id(id)),
         _ => {}
     }
@@ -206,7 +226,8 @@ fn env_num(key: &str, default: i32) -> i32 {
 }
 
 /// Renders the window to a PNG and quits (layout checks: `CALENDAR_SNAPSHOT=out.png`;
-/// `CALENDAR_SNAPSHOT_DATE`, `_VIEW`, `_W`, `_H`, `_DELAY`).
+/// `CALENDAR_SNAPSHOT_DATE`, `_VIEW`, `_W`, `_H`, `_DELAY`, and `_DRAWER` to open the
+/// narrow window's sidebar).
 fn snapshot_and_quit(app: &gtk::Application, out: std::path::PathBuf) {
     let Some(ui) = ui() else { return };
     let window = ui.borrow().window.clone();
@@ -224,8 +245,11 @@ fn snapshot_and_quit(app: &gtk::Application, out: std::path::PathBuf) {
     window.set_size_request(w, h);
     let app = app.clone();
     let delay = env_num("CALENDAR_SNAPSHOT_DELAY", 2500) as u64;
+    if std::env::var_os("CALENDAR_SNAPSHOT_DRAWER").is_some() {
+        glib::timeout_add_local_once(std::time::Duration::from_millis(delay.saturating_sub(800)), open_drawer);
+    }
     glib::timeout_add_local_once(std::time::Duration::from_millis(delay), move || {
-        let (w, h, nav_w, compact) = (window.width(), window.height(), nav.width(), nav.has_css_class("compact"));
+        let (w, h, nav_w, drawer) = (window.width(), window.height(), nav.width(), DRAWER_OPEN.with(|d| d.get()));
         if let Some(child) = window.child() {
             let paintable = gtk::WidgetPaintable::new(Some(&child));
             let snapshot = gtk::Snapshot::new();
@@ -237,7 +261,7 @@ fn snapshot_and_quit(app: &gtk::Application, out: std::path::PathBuf) {
                 eprintln!("snapshot failed: {e}");
             }
         }
-        println!("snapshot {w}x{h} nav={nav_w} compact={compact} -> {}", out.display());
+        println!("snapshot {w}x{h} nav={nav_w} drawer={drawer} -> {}", out.display());
         app.quit();
     });
 }
@@ -252,10 +276,13 @@ pub fn apply(update: Update) {
             u.loaded = true;
         }
         Update::Calendars(list) => {
-            let mut u = ui.borrow_mut();
-            u.unavailable = None;
-            u.loaded = true;
-            u.calendars = list;
+            {
+                let mut u = ui.borrow_mut();
+                u.unavailable = None;
+                u.loaded = true;
+                u.calendars = list;
+            }
+            refresh_account_info();
         }
         Update::Identities(me) => {
             ui.borrow_mut().me = me;
@@ -448,6 +475,7 @@ pub fn go_to(date: NaiveDate) {
 }
 
 pub fn go_to_today() {
+    close_drawer();
     go_to(Local::now().date_naive());
 }
 
@@ -635,43 +663,30 @@ fn nav_button(icon: &str, title: &str, tooltip: &str) -> gtk::Button {
     let label = widgets::label(title, "nav-label");
     label.set_hexpand(true);
     label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    label.add_css_class("compact-hide");
     content.append(&label);
     button.set_child(Some(&content));
     button.set_tooltip_text(Some(tooltip));
     button
 }
 
-/// A calendar's checkbox in its colour: filled with a check when shown, an outline when
-/// hidden. Rounded, like the 2.0 mockup's.
-fn swatch(color: Option<&str>, shown: bool) -> gtk::DrawingArea {
-    const SIZE: f64 = 15.0;
+/// A calendar's dot in its colour: filled when shown, a ring when hidden.
+fn dot(color: Option<&str>, shown: bool) -> gtk::DrawingArea {
+    const SIZE: f64 = 10.0;
     let area = gtk::DrawingArea::new();
-    area.set_content_width(18);
-    area.set_content_height(18);
+    area.set_content_width(16);
+    area.set_content_height(16);
     area.set_valign(gtk::Align::Center);
     let color = color.map(Rgb::hex);
     area.set_draw_func(move |_, cr, w, h| {
         let c = color.unwrap_or_else(|| Rgb::hex(&nyx_theme::palette().accent));
-        let (x, y) = ((w as f64 - SIZE) / 2.0, (h as f64 - SIZE) / 2.0);
+        let (cx, cy) = (w as f64 / 2.0, h as f64 / 2.0);
         cr.set_source_rgb(c.0, c.1, c.2);
         if shown {
-            crate::draw::rounded(cr, x, y, SIZE, SIZE, 4.5);
+            cr.arc(cx, cy, SIZE / 2.0, 0.0, std::f64::consts::TAU);
             let _ = cr.fill();
-            // The check: dark on light colours, white on the rest.
-            let light = 0.2126 * c.0 + 0.7152 * c.1 + 0.0722 * c.2 > 0.62;
-            let on = if light { 0.08 } else { 1.0 };
-            cr.set_source_rgba(on, on, on, 0.95);
-            cr.set_line_width(1.7);
-            cr.set_line_cap(gtk::cairo::LineCap::Round);
-            cr.set_line_join(gtk::cairo::LineJoin::Round);
-            cr.move_to(x + SIZE * 0.26, y + SIZE * 0.52);
-            cr.line_to(x + SIZE * 0.44, y + SIZE * 0.70);
-            cr.line_to(x + SIZE * 0.76, y + SIZE * 0.32);
-            let _ = cr.stroke();
         } else {
             cr.set_line_width(1.5);
-            crate::draw::rounded(cr, x + 0.75, y + 0.75, SIZE - 1.5, SIZE - 1.5, 4.0);
+            cr.arc(cx, cy, SIZE / 2.0 - 0.75, 0.0, std::f64::consts::TAU);
             let _ = cr.stroke();
         }
     });
@@ -685,23 +700,23 @@ fn calendar_button(cal: &CalendarInfo) -> gtk::Button {
     if !cal.selected {
         button.add_css_class("hidden-calendar");
     }
-    let content = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-    content.append(&swatch(cal.color.as_deref(), cal.selected));
+    // Clicking mustn't take focus: the row is rebuilt, and losing a focused row
+    // scrolls the sidebar.
+    button.set_focus_on_click(false);
+    let content = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    content.append(&dot(cal.color.as_deref(), cal.selected));
     let label = widgets::label(&cal.name, "nav-label");
     label.set_hexpand(true);
     label.set_xalign(0.0);
     label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    label.add_css_class("compact-hide");
     content.append(&label);
     if cal.offline && cal.selected {
         let offline = gtk::Image::from_icon_name("network-offline-symbolic");
-        offline.add_css_class("compact-hide");
         offline.add_css_class("dim");
         offline.set_tooltip_text(Some("Offline: showing the saved copy"));
         content.append(&offline);
     } else if cal.read_only {
         let lock = gtk::Image::from_icon_name("changes-prevent-symbolic");
-        lock.add_css_class("compact-hide");
         lock.add_css_class("dim");
         lock.set_tooltip_text(Some("Read only"));
         content.append(&lock);
@@ -716,19 +731,57 @@ fn calendar_button(cal: &CalendarInfo) -> gtk::Button {
     button
 }
 
-/// An account's heading, which folds its calendars away.
-fn group_label(text: &str, add: bool, folded: bool) -> gtk::Widget {
-    let label = widgets::label(&text.to_uppercase(), "nav-group");
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    row.add_css_class("compact-hide");
+/// The calendars copied from the old storage by nyx-pim-migrate; nothing syncs them.
+pub(crate) fn is_imported(cal: &CalendarInfo) -> bool {
+    cal.uid.starts_with("import:")
+}
+
+/// A sidebar heading: its icon, text and tooltip.
+fn heading_look(items: &[CalendarInfo], accounts: &std::collections::HashMap<String, (String, String)>, key: &str) -> (gtk::Widget, String, Option<&'static str>) {
+    if items.iter().all(is_imported) {
+        let icon = gtk::Image::from_icon_name("folder-download-symbolic");
+        let tip = "A one-time local copy of your old calendars, made when Calendar moved to Nyx storage. It doesn't sync.";
+        return (icon.upcast(), "Imported (not syncing)".into(), Some(tip));
+    }
+    if let Some((provider, identity)) = items.first().and_then(|c| c.account.as_ref()).and_then(|id| accounts.get(id)) {
+        return (crate::account_logo::image(provider, 16).upcast(), identity.clone(), None);
+    }
+    if items.iter().any(|c| c.account.is_some()) {
+        return (crate::account_logo::image("", 16).upcast(), key.to_string(), None);
+    }
+    (gtk::Image::from_icon_name("computer-symbolic").upcast(), key.to_string(), None)
+}
+
+/// An account's heading, which folds its calendars away; folded, it counts them.
+fn group_heading(key: &str, items: &[CalendarInfo], add: bool, folded: bool) -> gtk::Widget {
+    let accounts = ui().map(|u| u.borrow().account_info.clone()).unwrap_or_default();
+    let (icon, text, tip) = heading_look(items, &accounts, key);
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    row.add_css_class("nav-heading");
+    if folded {
+        row.add_css_class("folded");
+    }
+    row.set_tooltip_text(tip);
+    icon.add_css_class("nav-heading-icon");
+    row.append(&icon);
+    let label = widgets::label(&text, "nav-heading-label");
     label.set_hexpand(true);
     label.set_xalign(0.0);
+    label.set_ellipsize(gtk::pango::EllipsizeMode::End);
     row.append(&label);
+    if folded {
+        let hidden = items.iter().filter(|c| !c.selected).count();
+        let total = if items.len() == 1 { "1 calendar".to_string() } else { format!("{} calendars", items.len()) };
+        let count = widgets::label(&if hidden == 0 { total.clone() } else { format!("{hidden} hidden") }, "nav-count");
+        if hidden > 0 {
+            count.set_tooltip_text(Some(&format!("{hidden} of {total} hidden")));
+        }
+        row.append(&count);
+    }
     if add {
         let plus = widgets::icon_button("list-add-symbolic", "Add an account");
         plus.add_css_class("flat");
         plus.add_css_class("nav-group-add");
-        plus.set_valign(gtk::Align::End);
         plus.connect_clicked(|_| open_online_accounts());
         row.append(&plus);
     }
@@ -736,15 +789,31 @@ fn group_label(text: &str, add: bool, folded: bool) -> gtk::Widget {
     let fold = widgets::icon_button(icon, tip);
     fold.add_css_class("flat");
     fold.add_css_class("nav-group-add");
-    fold.set_valign(gtk::Align::End);
-    let key = text.to_string();
-    fold.connect_clicked(move |_| toggle_group_folded(&key));
+    fold.add_css_class("nav-fold");
+    let k = key.to_string();
+    fold.connect_clicked(move |_| toggle_group_folded(&k));
     row.append(&fold);
     let click = gtk::GestureClick::new();
-    let key = text.to_string();
-    click.connect_released(move |_, _, _, _| toggle_group_folded(&key));
+    let k = key.to_string();
+    click.connect_released(move |_, _, _, _| toggle_group_folded(&k));
     label.add_controller(click);
+    crate::menus::attach_group(&row, &text, items);
     row.upcast()
+}
+
+/// Loads each account's provider and address for the headings, and redraws
+/// the sidebar when they change.
+fn refresh_account_info() {
+    worker::accounts(|accounts| {
+        let Some(ui) = ui() else { return };
+        let info: std::collections::HashMap<String, (String, String)> =
+            accounts.into_iter().map(|a| (a.id, (a.provider, a.identity))).collect();
+        if ui.borrow().account_info == info {
+            return;
+        }
+        ui.borrow_mut().account_info = info;
+        rebuild_nav();
+    });
 }
 
 /// Folds or unfolds an account's calendars in the sidebar.
@@ -763,37 +832,35 @@ fn rebuild_nav() {
     let Some(ui) = ui() else { return };
     let list = ui.borrow().nav_list.clone();
     let mini = ui.borrow().mini.root.clone();
+    let scroll = ui.borrow().nav_scroll.clone();
+    let position = scroll.vadjustment().value();
     while let Some(child) = list.first_child() {
         list.remove(&child);
     }
     list.append(&mini);
 
     let calendars = ui.borrow().calendars.clone();
-    // Calendar Sets: show a group of calendars together.
-    if !calendars.is_empty() {
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        row.add_css_class("compact-hide");
-        let label = widgets::label("SETS", "nav-group");
-        label.add_css_class("first");
+    // Calendar Sets: show a group of calendars together, once there are any.
+    let sets = prefs::get().sets;
+    if !calendars.is_empty() && !sets.is_empty() {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        row.add_css_class("nav-heading");
+        let icon = gtk::Image::from_icon_name("view-list-symbolic");
+        icon.add_css_class("nav-heading-icon");
+        row.append(&icon);
+        let label = widgets::label("Sets", "nav-heading-label");
         label.set_hexpand(true);
         label.set_xalign(0.0);
         row.append(&label);
         let plus = widgets::icon_button("list-add-symbolic", "Save the shown calendars as a set");
         plus.add_css_class("flat");
         plus.add_css_class("nav-group-add");
-        plus.set_valign(gtk::Align::End);
         plus.connect_clicked(|_| save_set());
         row.append(&plus);
         list.append(&row);
         let shown: Vec<String> = calendars.iter().filter(|c| c.selected).map(|c| c.uid.clone()).collect();
         let all = calendars.iter().all(|c| c.selected);
-        let everything = nav_button("view-app-grid-symbolic", "All calendars", "Show every calendar");
-        if all {
-            everything.add_css_class("active");
-        }
-        everything.connect_clicked(|_| show_set(None));
-        list.append(&everything);
-        for set in prefs::get().sets {
+        for set in sets {
             let mut want = set.calendars.clone();
             want.retain(|u| calendars.iter().any(|c| c.uid == *u));
             want.sort();
@@ -817,10 +884,27 @@ fn rebuild_nav() {
             None => groups.push((label, vec![cal])),
         }
     }
+    // Online accounts, then this computer, then the imported copy.
+    groups.sort_by_key(|(_, items)| match () {
+        _ if items.iter().all(is_imported) => 2,
+        _ if items.iter().any(|c| c.account.is_some()) => 0,
+        _ => 1,
+    });
+    if let Some((key, _)) = groups.iter().find(|(_, items)| items.iter().all(is_imported))
+        && !prefs::get().imported_folded_once
+    {
+        let key = key.clone();
+        prefs::update(|p| {
+            p.imported_folded_once = true;
+            if !p.collapsed_groups.contains(&key) {
+                p.collapsed_groups.push(key);
+            }
+        });
+    }
     let folded_groups = prefs::get().collapsed_groups;
-    for (i, (label, items)) in groups.iter().enumerate() {
-        let folded = folded_groups.contains(label);
-        list.append(&group_label(label, i == 0, folded));
+    for (i, (key, items)) in groups.iter().enumerate() {
+        let folded = folded_groups.contains(key);
+        list.append(&group_heading(key, items, i == 0, folded));
         if folded {
             continue;
         }
@@ -829,18 +913,13 @@ fn rebuild_nav() {
         }
     }
 
-    let spacer = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    spacer.set_vexpand(true);
-    list.append(&spacer);
-    let today = nav_button("x-office-calendar-symbolic", "Today", "Go to today (T)");
-    today.connect_clicked(|_| go_to_today());
-    list.append(&today);
-    let accounts = nav_button("system-users-symbolic", "Online accounts", "Add or sign in to calendar accounts in Settings");
-    accounts.connect_clicked(|_| open_online_accounts());
-    list.append(&accounts);
-
-    let nav = ui.borrow().nav.clone();
-    apply_compact(&nav, NARROW.with(|n| n.get()) || prefs::get().sidebar_collapsed);
+    let adjustment = scroll.vadjustment();
+    adjustment.set_value(position);
+    // The list is laid out again after this; put the scroll back once it has been.
+    glib::idle_add_local_full(glib::Priority::LOW, move || {
+        adjustment.set_value(position.min(adjustment.upper() - adjustment.page_size()));
+        glib::ControlFlow::Break
+    });
 }
 
 // ---------- Building ----------
@@ -923,7 +1002,7 @@ fn build(app: &gtk::Application) {
         .vexpand(true)
         .child(&list)
         .build();
-    // The sidebar's top: finding events, and its toggle (centred on the narrow rail).
+    // The sidebar's top: finding events, and its toggle.
     let nav_top = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     nav_top.add_css_class("nav-top");
     let search = gtk::SearchEntry::new();
@@ -931,10 +1010,9 @@ fn build(app: &gtk::Application) {
     search.set_tooltip_text(Some("Enter searches the whole year"));
     search.update_property(&[gtk::accessible::Property::Label("Find events")]);
     search.add_css_class("sidebar-search");
-    search.add_css_class("compact-hide");
     search.set_hexpand(true);
     nav_top.append(&search);
-    let collapse = nyx_ui::widgets::bar_button("sidebar-show-symbolic", "Collapse the sidebar (Ctrl+B)");
+    let collapse = nyx_ui::widgets::bar_button("sidebar-show-symbolic", "Hide the sidebar (Ctrl+B)");
     collapse.add_css_class("nav-toggle");
     collapse.connect_clicked(|_| toggle_sidebar());
     nav_top.append(&collapse);
@@ -947,8 +1025,17 @@ fn build(app: &gtk::Application) {
         show_view();
         refresh_status();
     });
-    search.connect_activate(|entry| search_year(entry.text().to_string()));
-    search.connect_stop_search(|entry| entry.set_text(""));
+    search.connect_activate(|entry| {
+        close_drawer();
+        search_year(entry.text().to_string());
+    });
+    search.connect_stop_search(|entry| {
+        if entry.text().is_empty() {
+            close_drawer();
+        } else {
+            entry.set_text("");
+        }
+    });
 
     let banners = gtk::Box::new(gtk::Orientation::Vertical, 8);
     banners.add_css_class("banners");
@@ -961,7 +1048,6 @@ fn build(app: &gtk::Application) {
     let readout = widgets::label("", "status-readout");
     readout.set_ellipsize(gtk::pango::EllipsizeMode::End);
     readout.set_hexpand(true);
-    readout.add_css_class("compact-hide");
     STATUS.with(|s| *s.borrow_mut() = Some(readout.clone()));
     nav_foot.append(&readout);
     nav_foot.append(&reload);
@@ -971,7 +1057,10 @@ fn build(app: &gtk::Application) {
     let days = DaysView::new(hooks.clone());
     let month = MonthView::new(hooks.clone());
     let agenda = AgendaView::new(hooks);
-    let mini = MiniCalendar::new(go_to);
+    let mini = MiniCalendar::new(|day| {
+        close_drawer();
+        go_to(day);
+    });
     let pages = gtk::Stack::new();
     pages.set_transition_type(gtk::StackTransitionType::Crossfade);
     pages.add_named(&days.root, Some("days"));
@@ -997,12 +1086,40 @@ fn build(app: &gtk::Application) {
     content.append(&pages);
 
     let body = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    body.set_vexpand(true);
     body.append(&nav);
     body.append(&content);
 
-    // The header: the app, where you are in time, the view, New event and Settings.
+    // Narrow windows: the sidebar slides over the calendar, which dims behind it.
+    // Both stay untargetable while closed, or they'd swallow the calendar's clicks.
+    let body_overlay = gtk::Overlay::new();
+    body_overlay.set_vexpand(true);
+    body_overlay.set_child(Some(&body));
+    let dim = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    dim.add_css_class("drawer-scrim");
+    dim.set_hexpand(true);
+    dim.set_vexpand(true);
+    let click = gtk::GestureClick::new();
+    click.connect_released(|_, _, _, _| close_drawer());
+    dim.add_controller(click);
+    let scrim = gtk::Revealer::builder()
+        .transition_type(gtk::RevealerTransitionType::Crossfade)
+        .child(&dim)
+        .can_target(false)
+        .build();
+    body_overlay.add_overlay(&scrim);
+    let drawer = gtk::Revealer::builder()
+        .transition_type(gtk::RevealerTransitionType::SlideRight)
+        .halign(gtk::Align::Start)
+        .can_target(false)
+        .build();
+    body_overlay.add_overlay(&drawer);
+
+    // The header: the sidebar button, where you are in time, the view, New event and Settings.
     let header = nyx_ui::chrome::app_header(&window, "x-office-calendar-symbolic", "Calendar");
+    let sidebar_button = nyx_ui::widgets::bar_button("sidebar-show-symbolic", "Show the sidebar (Ctrl+B)");
+    sidebar_button.set_visible(false);
+    sidebar_button.connect_clicked(|_| toggle_sidebar());
+    header.start.append(&sidebar_button);
     header.start.append(&date_nav);
     header.center.append(&switcher);
     header.end.append(&new_button);
@@ -1011,7 +1128,7 @@ fn build(app: &gtk::Application) {
     let frame = gtk::Box::new(gtk::Orientation::Vertical, 0);
     frame.add_css_class("window-frame");
     frame.append(&header.root);
-    frame.append(&body);
+    frame.append(&body_overlay);
 
     let overlay = gtk::Overlay::new();
     overlay.set_child(Some(&frame));
@@ -1026,6 +1143,13 @@ fn build(app: &gtk::Application) {
         overlay: overlay.clone(),
         nav: nav.clone(),
         nav_list: list,
+        nav_scroll: nav_scroll.clone(),
+        nav_toggle: collapse,
+        account_info: Default::default(),
+        body,
+        drawer,
+        scrim,
+        sidebar_button,
         search,
         banners,
         title,
@@ -1065,7 +1189,7 @@ fn build(app: &gtk::Application) {
             }
             nav.add_css_class("sized");
             NARROW.with(|n| n.set(narrow));
-            apply_compact(&nav, narrow || prefs::get().sidebar_collapsed);
+            apply_sidebar();
             if let Some(ui) = self::ui()
                 && let Ok(u) = ui.try_borrow()
                 && u.results.is_none()
@@ -1088,39 +1212,61 @@ fn build(app: &gtk::Application) {
     redraw();
 }
 
-fn apply_compact(nav: &gtk::Box, compact: bool) {
-    if compact {
-        nav.add_css_class("compact");
+/// Puts the sidebar beside the calendar (wide), hides it (wide and collapsed), or
+/// moves it into the drawer over the calendar (narrow), open or closed.
+fn apply_sidebar() {
+    let Some(ui) = ui() else { return };
+    let Ok(u) = ui.try_borrow() else { return };
+    let narrow = NARROW.with(|n| n.get());
+    if !narrow {
+        DRAWER_OPEN.with(|d| d.set(false));
+    }
+    let open = DRAWER_OPEN.with(|d| d.get());
+    let collapsed = prefs::get().sidebar_collapsed;
+    let in_drawer = u.nav.parent().is_some_and(|p| &p == u.drawer.upcast_ref::<gtk::Widget>());
+    if narrow && !in_drawer {
+        u.body.remove(&u.nav);
+        u.drawer.set_child(Some(&u.nav));
+    } else if !narrow && in_drawer {
+        u.drawer.set_child(None::<&gtk::Widget>);
+        u.body.prepend(&u.nav);
+    }
+    if narrow {
+        u.nav.add_css_class("drawer");
     } else {
-        nav.remove_css_class("compact");
+        u.nav.remove_css_class("drawer");
     }
-    fn walk(widget: &gtk::Widget, compact: bool) {
-        if widget.has_css_class("nav-toggle") {
-            widget.set_hexpand(compact);
-            widget.set_halign(if compact { gtk::Align::Center } else { gtk::Align::End });
-        }
-        if widget.has_css_class("compact-hide") {
-            widget.set_visible(!compact);
-        }
-        if widget.has_css_class("nav-item")
-            && let Some(content) = widget.downcast_ref::<gtk::Button>().and_then(|b| b.child())
-        {
-            content.set_halign(if compact { gtk::Align::Center } else { gtk::Align::Fill });
-        }
-        let mut child = widget.first_child();
-        while let Some(next) = child {
-            walk(&next, compact);
-            child = next.next_sibling();
-        }
-    }
-    walk(nav.upcast_ref(), compact);
+    u.nav.set_visible(narrow || !collapsed);
+    u.drawer.set_reveal_child(open);
+    u.drawer.set_can_target(open);
+    u.scrim.set_reveal_child(open);
+    u.scrim.set_can_target(open);
+    u.sidebar_button.set_visible(narrow || collapsed);
+    u.nav_toggle.set_tooltip_text(Some(if narrow { "Close the sidebar (Esc)" } else { "Hide the sidebar (Ctrl+B)" }));
 }
 
+/// Ctrl+B and the sidebar buttons: the drawer on narrow windows, else the saved choice.
 pub fn toggle_sidebar() {
-    prefs::update(|p| p.sidebar_collapsed = !p.sidebar_collapsed);
-    let Some(ui) = ui() else { return };
-    let nav = ui.borrow().nav.clone();
-    apply_compact(&nav, NARROW.with(|n| n.get()) || prefs::get().sidebar_collapsed);
+    if NARROW.with(|n| n.get()) {
+        DRAWER_OPEN.with(|d| d.set(!d.get()));
+    } else {
+        prefs::update(|p| p.sidebar_collapsed = !p.sidebar_collapsed);
+    }
+    apply_sidebar();
+}
+
+fn open_drawer() {
+    if NARROW.with(|n| n.get()) && !DRAWER_OPEN.with(|d| d.get()) {
+        DRAWER_OPEN.with(|d| d.set(true));
+        apply_sidebar();
+    }
+}
+
+pub(crate) fn close_drawer() {
+    if DRAWER_OPEN.with(|d| d.get()) {
+        DRAWER_OPEN.with(|d| d.set(false));
+        apply_sidebar();
+    }
 }
 
 fn typing(window: &gtk::Window) -> bool {
@@ -1132,18 +1278,27 @@ fn install_keys(window: &gtk::ApplicationWindow, search: &gtk::SearchEntry) {
     let keys = gtk::EventControllerKey::new();
     let search = search.clone();
     let win = window.clone();
+    let find = move |search: &gtk::SearchEntry| {
+        open_drawer();
+        let search = search.clone();
+        glib::idle_add_local_once(move || {
+            search.grab_focus();
+        });
+    };
     keys.connect_key_pressed(move |_, key, _, mods| {
         let ctrl = mods.contains(gdk::ModifierType::CONTROL_MASK);
         if ctrl {
             match key {
-                gdk::Key::f => {
-                    search.grab_focus();
-                }
+                gdk::Key::f => find(&search),
                 gdk::Key::b => toggle_sidebar(),
                 gdk::Key::i => actions::import_dialog(),
                 gdk::Key::n => new_event(),
                 _ => return glib::Propagation::Proceed,
             }
+            return glib::Propagation::Stop;
+        }
+        if key == gdk::Key::Escape && DRAWER_OPEN.with(|d| d.get()) {
+            close_drawer();
             return glib::Propagation::Stop;
         }
         if typing(win.upcast_ref()) {
@@ -1160,9 +1315,7 @@ fn install_keys(window: &gtk::ApplicationWindow, search: &gtk::SearchEntry) {
             gdk::Key::y => set_view(ViewKind::Year),
             gdk::Key::n => new_event(),
             gdk::Key::r => refresh(),
-            gdk::Key::slash => {
-                search.grab_focus();
-            }
+            gdk::Key::slash => find(&search),
             gdk::Key::Escape if !search.text().is_empty() => {
                 search.set_text("");
             }
@@ -1262,6 +1415,7 @@ fn show_toast(message: &str, undo: Option<Box<dyn Fn()>>) {
 /// Shows a set's calendars and hides the rest (every calendar for `None`).
 /// Which calendars show is EDS's, so other calendar apps follow.
 pub(crate) fn show_set(set: Option<&prefs::CalendarSet>) {
+    close_drawer();
     for cal in calendars() {
         let want = set.is_none_or(|s| s.calendars.contains(&cal.uid));
         if want != cal.selected {
@@ -1271,7 +1425,7 @@ pub(crate) fn show_set(set: Option<&prefs::CalendarSet>) {
 }
 
 /// Names the calendars shown now as a set.
-fn save_set() {
+pub(crate) fn save_set() {
     let shown: Vec<String> = calendars().into_iter().filter(|c| c.selected).map(|c| c.uid).collect();
     if shown.is_empty() {
         toast("Show the calendars for the set first.");

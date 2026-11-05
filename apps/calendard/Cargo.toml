@@ -18,10 +18,10 @@ gio = "0.22"
 glib = "0.22"
 nyx-calendar-core = { path = "../../crates/nyx-calendar-core" }
 nyx-core = { git = "https://github.com/design-nexus/nyx-core.git", rev = "394ddf8193797cd1f420fac98b097d04fa75f0e2", default-features = false }
-nyx-eds = { package = "nyx-pim", git = "https://github.com/design-nexus/nyx-core.git", rev = "394ddf8193797cd1f420fac98b097d04fa75f0e2" }
+nyx-eds = { package = "nyx-pim", git = "https://github.com/design-nexus/nyx-core.git", rev = "a801c59bf6868d45f4120a7b4974f1c47e5fe7a1" }
 rusqlite = { version = "0.40", features = ["bundled"] }
 
 [dev-dependencies]
 gio = "0.22"
 glib = "0.22"
-nyx-eds = { package = "nyx-pim", git = "https://github.com/design-nexus/nyx-core.git", rev = "394ddf8193797cd1f420fac98b097d04fa75f0e2" }
+nyx-eds = { package = "nyx-pim", git = "https://github.com/design-nexus/nyx-core.git", rev = "a801c59bf6868d45f4120a7b4974f1c47e5fe7a1" }

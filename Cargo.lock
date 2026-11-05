@@ -1534,7 +1534,7 @@ dependencies = [
 [[package]]
 name = "nyx-icalglib-sys"
 version = "0.1.0"
-source = "git+https://github.com/design-nexus/nyx-core.git?rev=394ddf8193797cd1f420fac98b097d04fa75f0e2#394ddf8193797cd1f420fac98b097d04fa75f0e2"
+source = "git+https://github.com/design-nexus/nyx-core.git?rev=a801c59bf6868d45f4120a7b4974f1c47e5fe7a1#a801c59bf6868d45f4120a7b4974f1c47e5fe7a1"
 dependencies = [
  "gio-sys",
  "glib-sys",
@@ -1546,7 +1546,7 @@ dependencies = [
 [[package]]
 name = "nyx-pim"
 version = "0.1.0"
-source = "git+https://github.com/design-nexus/nyx-core.git?rev=394ddf8193797cd1f420fac98b097d04fa75f0e2#394ddf8193797cd1f420fac98b097d04fa75f0e2"
+source = "git+https://github.com/design-nexus/nyx-core.git?rev=a801c59bf6868d45f4120a7b4974f1c47e5fe7a1#a801c59bf6868d45f4120a7b4974f1c47e5fe7a1"
 dependencies = [
  "chrono",
  "chrono-tz",

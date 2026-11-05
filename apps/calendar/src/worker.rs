@@ -226,6 +226,11 @@ pub fn set_color(uid: String, color: String, reply: impl FnOnce(Result<(), Strin
     );
 }
 
+/// The online accounts (Settings → Accounts).
+pub fn accounts(reply: impl FnOnce(Vec<nyx_accounts::Account>) + 'static) {
+    ask(|| STATE.with(|s| s.borrow().accounts.as_ref().and_then(|c| c.list().ok()).unwrap_or_default()), reply);
+}
+
 /// Every calendar, with whether it's switched on (Settings → Calendars).
 pub fn all_calendars(reply: impl FnOnce(Vec<(nyx_eds::Source, bool)>) + 'static) {
     ask(|| STATE.with(|s| s.borrow().registry.as_ref().map(|r| r.all_sources(Kind::Calendar)).unwrap_or_default()), reply);

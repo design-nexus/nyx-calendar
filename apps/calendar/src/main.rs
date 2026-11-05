@@ -1,5 +1,6 @@
 //! Calendar — your online and local calendars, for Omarchy.
 
+mod account_logo;
 mod actions;
 mod agenda;
 mod control;
@@ -29,7 +30,7 @@ pub const APP_ID: &str = "io.github.design_nexus.nyx.Calendar";
 const USAGE: &str = "Usage: nyx-calendar [OPTIONS] [FILE.ics...]\n\
 \n\
   FILE.ics        import the events in an iCalendar file\n\
-  --section ID    open day, week, month, year, agenda or settings\n\
+  --section ID    open day, week, month, year, agenda, settings or accounts\n\
   --date DAY      show that day (YYYY-MM-DD)\n\
   --toggle        close the window if it's open, otherwise open it\n\
   --sync-online   synchronize enabled accounts without opening a window\n\
@@ -84,7 +85,8 @@ fn main() -> glib::ExitCode {
         unsafe { std::env::set_var("GSK_RENDERER", "ngl") };
     }
 
-    let app = gtk::Application::builder().application_id(APP_ID).flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE).build();
+    let app_id = std::env::var("NYX_CALENDAR_APP_ID").unwrap_or_else(|_| APP_ID.to_string());
+    let app = gtk::Application::builder().application_id(app_id).flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE).build();
     app.connect_startup(|app| {
         theme::install();
         nyx_core::control::serve_async(app, control::tools(), control::handle);

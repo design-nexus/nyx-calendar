@@ -32,7 +32,6 @@ impl MiniCalendar {
         let data = Rc::new(RefCell::new(Data { month: today.with_day(1).unwrap_or(today), range: (today, today) }));
         let root = gtk::Box::new(gtk::Orientation::Vertical, 4);
         root.add_css_class("mini-calendar");
-        root.add_css_class("compact-hide");
         let head = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         let title = widgets::label("", "mini-title");
         title.set_hexpand(true);

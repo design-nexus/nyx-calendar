@@ -201,7 +201,7 @@ fn working(page: &Page) {
 
 fn sets(page: &Page) {
     let group = page.group("Calendar sets");
-    group.note("Show a group of calendars together from the sidebar. Save the calendars shown now with + beside SETS.");
+    group.note("Show a group of calendars together from the sidebar. Right-click a calendar or an account in the sidebar and choose Save shown calendars as a set.");
     let sets = prefs::get().sets;
     if sets.is_empty() {
         group.add(&widgets::row("No sets yet", "", None));
@@ -223,17 +223,97 @@ fn sets(page: &Page) {
     }
 }
 
+/// The online accounts that can hold calendars, each with a switch for its calendars
+/// (off: not loaded or synced, in every calendar app; the account itself is left
+/// alone), then Add account and Import events.
 fn accounts(page: &Page) {
     let group = page.group("Accounts");
-    group.note("Calendars come from the accounts in Settings → Online Accounts, and from this computer.");
-    let open = widgets::icon_button("go-next-symbolic", "Open Settings → Online Accounts");
-    open.connect_clicked(|_| window::open_online_accounts());
-    group.add(&widgets::row(
-        "Online accounts",
-        "Add, sign in to or remove Google, Nextcloud and other calendar accounts.",
-        Some(open.upcast_ref()),
-    ));
-    let import = widgets::icon_button("document-open-symbolic", "Import an .ics file (Ctrl+I)");
-    import.connect_clicked(|_| crate::actions::import_dialog());
-    group.add(&widgets::row("Import events", "Add the events in an .ics file to a calendar.", Some(import.upcast_ref())));
+    group.note("Your online accounts. Turn one off to stop loading and syncing its calendars; its mail, contacts and files stay as they are.");
+    let list = group.list.clone();
+    fill_accounts(&list);
+}
+
+fn fill_accounts(list: &gtk::Box) {
+    let list = list.clone();
+    worker::accounts(move |accounts| {
+        worker::all_calendars(move |sources| {
+            while let Some(child) = list.first_child() {
+                list.remove(&child);
+            }
+            let calendar = nyx_accounts::Service::Calendar;
+            let accounts: Vec<_> = accounts
+                .into_iter()
+                .filter(|a| nyx_accounts::providers::capabilities(&a.provider).is_ok_and(|c| c.services.contains(&calendar)))
+                .collect();
+            if accounts.is_empty() {
+                list.append(&widgets::row("No online accounts yet", "Add one to see its calendars here.", None));
+            }
+            for account in accounts {
+                let mut desc = provider_name(&account.provider).to_string();
+                if account.label() != account.identity {
+                    desc = format!("{desc} · {}", account.identity);
+                }
+                let mine: Vec<(String, bool)> = sources
+                    .iter()
+                    .filter(|(s, _)| s.account.as_deref() == Some(account.id.as_str()))
+                    .map(|(s, on)| (s.uid.clone(), *on))
+                    .collect();
+                if mine.is_empty() {
+                    let why = if account.enabled.contains(&calendar) {
+                        "No calendars yet"
+                    } else {
+                        "Calendar is off for this account in Online Accounts"
+                    };
+                    list.append(&widgets::row(account.label(), &gtk::glib::markup_escape_text(&format!("{desc} · {why}")), None));
+                    continue;
+                }
+                if account.status != "connected" {
+                    desc = format!("{desc} · Needs attention in Online Accounts");
+                }
+                let uids: Vec<String> = mine.iter().map(|(uid, _)| uid.clone()).collect();
+                let any_on = mine.iter().any(|(_, on)| *on);
+                let l = list.clone();
+                let (row, _) = widgets::switch_row(account.label(), &gtk::glib::markup_escape_text(&desc), any_on, move |on| {
+                    let (count, done) = (uids.len(), std::rc::Rc::new(std::cell::Cell::new(0)));
+                    for uid in &uids {
+                        let (l, done) = (l.clone(), done.clone());
+                        worker::set_enabled(uid.clone(), on, move |r| {
+                            if let Err(e) = r {
+                                window::toast(&format!("Couldn't change the account's calendars: {e}"));
+                            }
+                            done.set(done.get() + 1);
+                            if done.get() == count {
+                                fill_accounts(&l);
+                            }
+                        });
+                    }
+                });
+                list.append(&row);
+            }
+            let (add, button) = widgets::button_row(
+                "Add account",
+                "Google, Microsoft, Fastmail, Nextcloud, Zoho and more",
+                "Add…",
+                |_| window::open_online_accounts(),
+            );
+            button.add_css_class("suggested-action");
+            list.append(&add);
+            let import = widgets::icon_button("document-open-symbolic", "Import an .ics file (Ctrl+I)");
+            import.connect_clicked(|_| crate::actions::import_dialog());
+            list.append(&widgets::row("Import events", "Add the events in an .ics file to a calendar.", Some(import.upcast_ref())));
+        });
+    });
+}
+
+fn provider_name(provider: &str) -> &str {
+    match provider {
+        "google" => "Google",
+        "microsoft_personal" => "Microsoft personal",
+        "fastmail" => "Fastmail",
+        "zoho" => "Zoho",
+        "nextcloud" => "Nextcloud",
+        "caldav" => "CalDAV",
+        "webdav" => "WebDAV",
+        _ => "Online account",
+    }
 }

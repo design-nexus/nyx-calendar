@@ -15,7 +15,7 @@ const GROUPS: &[(&str, &str, &str)] = &[
     ("Working hours", "appointment-soon-symbolic", "Days and hours, reminders in the views"),
     ("Calendars", "view-calendar-symbolic", "Turn calendars and accounts on or off"),
     ("Calendar sets", "view-list-symbolic", "Groups of calendars"),
-    ("Accounts", "system-users-symbolic", "Online accounts in Settings"),
+    ("Accounts", "system-users-symbolic", "Which accounts show calendars; add an account"),
 ];
 
 const SPEC: Spec = Spec {

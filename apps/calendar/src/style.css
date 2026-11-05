@@ -20,7 +20,112 @@
 }
 
 .settings-navigation button.calendar-item.hidden-calendar .nav-label {
+  color: @theme_text_tertiary;
+}
+
+window.calendar-window .settings-navigation button.calendar-item {
+  min-height: 32px;
+  padding: 0 10px 0 12px;
+}
+
+/* Sidebar headings: an account's logo and address, the fold arrow on hover. */
+.settings-navigation .nav-heading {
+  margin: 14px 0 4px;
+  padding: 0 0 0 6px;
+  min-height: 24px;
+  border-spacing: 6px;
+}
+
+.settings-navigation .nav-heading button.nav-group-add {
+  margin-right: 0;
+  min-width: 20px;
+}
+
+.settings-navigation .nav-heading-label {
+  font-size: 12.5px;
+  font-weight: 600;
   color: @theme_dim_text;
+}
+
+.settings-navigation .nav-heading-icon {
+  -gtk-icon-size: 14px;
+  color: @theme_text_tertiary;
+}
+
+.settings-navigation .nav-count {
+  font-size: 11px;
+  color: @theme_text_tertiary;
+}
+
+.settings-navigation .nav-heading button.nav-fold {
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+
+.settings-navigation .nav-heading:hover button.nav-fold,
+.settings-navigation .nav-heading.folded button.nav-fold,
+.settings-navigation .nav-heading button.nav-fold:focus-visible {
+  opacity: 1;
+}
+
+/* The sidebar's right-click cards. */
+.calendar-card {
+  padding: 6px;
+  min-width: 250px;
+}
+
+.calendar-card .card-head {
+  padding: 4px 8px 6px;
+}
+
+.calendar-card .card-title {
+  font-weight: 600;
+  color: @theme_text;
+}
+
+.calendar-card .card-subtitle {
+  font-size: 11.5px;
+  color: @theme_dim_text;
+}
+
+.calendar-card .swatch-row {
+  padding: 2px 4px 6px;
+}
+
+.calendar-card button.swatch {
+  min-width: 26px;
+  min-height: 26px;
+  padding: 0;
+  border-radius: 999px;
+}
+
+.calendar-card .card-divider {
+  margin: 4px 2px;
+}
+
+.calendar-card button.card-action {
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: var(--nyx-radius-small);
+  font-weight: 400;
+}
+
+.calendar-card button.card-action image {
+  color: @theme_dim_text;
+}
+
+.calendar-card .card-key {
+  font-size: 11.5px;
+  color: @theme_text_tertiary;
+}
+
+.calendar-card button.card-action.card-danger,
+.calendar-card button.card-action.card-danger image {
+  color: alpha(@theme_danger, 0.85);
+}
+
+.calendar-card button.card-action.card-danger:hover {
+  background: alpha(@theme_danger, 0.12);
 }
 
 .settings-navigation .nav-group-add {
@@ -216,6 +321,17 @@ window.calendar-window .app-header button.accent-action:hover {
 
 .nav-top {
   padding: 0 0 6px 0;
+}
+
+/* Narrow windows: the sidebar slides over the calendar, which dims behind it. */
+.drawer-scrim {
+  background: alpha(black, 0.28);
+}
+
+.settings-navigation.drawer {
+  min-width: 260px;
+  background: @theme_panel;
+  border-right: 1px solid @hairline;
 }
 
 .nav-foot {
