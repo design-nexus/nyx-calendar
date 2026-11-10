@@ -28,6 +28,137 @@ pub fn tools() -> Value {
     ])
 }
 
+/// API 2: the tools with what they risk and how they're typed, the app, and the
+/// `upcoming` topic Glimpse's Calendar panel shows. Calendar answers while it runs.
+pub fn description(app_id: &str) -> Value {
+    let x = |risk: &str, extra: Value| {
+        let mut v = json!({"risk": risk});
+        if let (Some(v), Some(e)) = (v.as_object_mut(), extra.as_object()) {
+            v.extend(e.clone());
+        }
+        v
+    };
+    let meta = [
+        ("calendar.list", x("read_only", json!({"aliases": ["calendars"], "result": "object"}))),
+        ("calendar.read", x("read_only", json!({"aliases": [{"word": "today", "arguments": {}}, "day"], "result": "object"}))),
+        ("calendar.next", x("read_only", json!({"aliases": ["upcoming", "agenda"], "positional": ["count"], "result": "object"}))),
+        ("calendar.search", x("read_only", json!({"aliases": ["find"], "positional": ["query"], "result": "object"}))),
+        ("calendar.free_slots", x("read_only", json!({"aliases": ["free"], "positional": ["date"], "result": "object"}))),
+        ("calendar.suggest_times", x("read_only", json!({"positional": ["minutes"], "result": "object"}))),
+        ("calendar.create", x("writes", json!({"positional": ["title", "start"], "result": "object"}))),
+        ("calendar.edit", x("writes", json!({"result": "object"}))),
+        ("calendar.delete", x("destructive", json!({"result": "object"}))),
+    ];
+    let mut list = tools();
+    for t in list.as_array_mut().into_iter().flatten() {
+        if let Some((_, m)) = meta.iter().find(|(n, _)| t["name"] == *n) {
+            t["x-nyx"] = m.clone();
+        }
+    }
+    if let Some(a) = list.as_array_mut() {
+        a.push(json!({"name": "calendar.add", "description": "Add an event from words that say when (\"Lunch with Sam tomorrow at 1\"), to the usual calendar.",
+            "inputSchema": {"type": "object", "properties": {"text": {"type": "string", "minLength": 1}}, "required": ["text"], "additionalProperties": false},
+            "annotations": {"title": "Quick add an event"}, "x-nyx": {"risk": "writes", "positional": ["text"], "aliases": ["new"], "result": "object"}}));
+        a.push(json!({"name": "calendar.open", "description": "Open Calendar's window, at a day when given (YYYY-MM-DD).",
+            "inputSchema": {"type": "object", "properties": {"date": {"type": "string"}}, "additionalProperties": false},
+            "annotations": {"title": "Open Calendar"}, "x-nyx": {"risk": "writes", "confirmation": "never", "positional": ["date"], "result": "none"}}));
+    }
+    json!({
+        "tools": list,
+        "nyx": {"api": 2, "app": app_id, "name": "Calendar", "icon": crate::APP_ID, "namespaces": ["calendar"], "aliases": ["cal", "events"],
+                "bus_name": app_id, "activation": "running", "default": "calendar.search", "open": {"action": "calendar.open"},
+                "topics": [{"name": "upcoming", "sensitive": true}],
+                "panel": {"id": "calendar", "topics": ["upcoming"], "size": {"min": [420, 320], "preferred": [500, 400]}}}
+    })
+}
+
+thread_local! {
+    static SERVICE: std::cell::RefCell<Option<nyx_core::control::Service>> = const { std::cell::RefCell::new(None) };
+    static TIMER: std::cell::RefCell<Option<gtk::glib::SourceId>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Register the interface (from `connect_startup`); the `upcoming` topic is read again
+/// every minute only while something watches it, and after a change.
+pub fn serve(app: &gtk::Application) {
+    use gtk::prelude::*;
+    let id = app.application_id().map(|s| s.to_string()).unwrap_or_else(|| crate::APP_ID.to_string());
+    let window_app = app.clone();
+    let Some(service) = nyx_core::control::serve_with(app, description(&id), move |request, answer| {
+        let changes = !matches!(request.action.as_str(), "calendar.list" | "calendar.read" | "calendar.next" | "calendar.search" | "calendar.free_slots" | "calendar.suggest_times" | "calendar.open");
+        handle_with(&window_app, &request.action, request.arguments, Box::new(move |r| {
+            answer(r.map_err(|e| nyx_actions::Error::new(nyx_actions::ErrorKind::Failed, e)));
+            if changes {
+                publish();
+            }
+        }));
+    }) else {
+        return;
+    };
+    service.on_watch(|_, on| {
+        TIMER.with(|t| {
+            if let Some(id) = t.borrow_mut().take() {
+                id.remove();
+            }
+            if on {
+                publish();
+                *t.borrow_mut() = Some(gtk::glib::timeout_add_seconds_local(60, || {
+                    publish();
+                    gtk::glib::ControlFlow::Continue
+                }));
+            }
+        });
+    });
+    SERVICE.with(|s| *s.borrow_mut() = Some(service));
+}
+
+fn publish() {
+    let Some(service) = SERVICE.with(|s| s.borrow().clone()) else { return };
+    if !service.watched("upcoming") {
+        return;
+    }
+    handle("calendar.next", json!({"count": 12}), Box::new(move |r| {
+        service.publish("upcoming", r.unwrap_or_else(|e| json!({"error": e})));
+    }));
+}
+
+fn handle_with(app: &gtk::Application, name: &str, args: Value, reply: Reply) {
+    match name {
+        "calendar.open" => {
+            window::present(app, None);
+            if let Some(day) = date_arg(&args, "date") {
+                window::go_to(day);
+            }
+            reply(Ok(Value::Null));
+        }
+        "calendar.add" => {
+            let words = args["text"].as_str().unwrap_or("").trim().to_string();
+            let p = nyx_when::parse(&words, Local::now().naive_local());
+            let Some(day) = p.date.or_else(|| p.start.map(|_| Local::now().date_naive())) else {
+                return reply(Err("say when, such as tomorrow at 1".into()));
+            };
+            let title = if p.title.trim().is_empty() { words.clone() } else { p.title.trim().to_string() };
+            let (start, end) = match p.start {
+                Some(t) => {
+                    let start = day.and_time(t);
+                    let end = p.end.map(|e| day.and_time(e)).or_else(|| p.duration.map(|d| start + d)).unwrap_or(start + Duration::hours(1));
+                    (start.format("%Y-%m-%dT%H:%M").to_string(), end.format("%Y-%m-%dT%H:%M").to_string())
+                }
+                None => (day.to_string(), day.to_string()),
+            };
+            let said = json!({"title": title, "start": start, "all_day": p.start.is_none()});
+            handle("calendar.create", json!({"title": title, "start": start, "end": end}), Box::new(move |r| {
+                reply(r.map(|mut v| {
+                    if let (Some(v), Some(said)) = (v.as_object_mut(), said.as_object()) {
+                        v.extend(said.clone());
+                    }
+                    v
+                }));
+            }));
+        }
+        _ => handle(name, args, reply),
+    }
+}
+
 pub fn handle(name: &str, args: Value, reply: Reply) {
     match name {
         "calendar.list" => reply(Ok(json!({ "calendars": window::calendars().iter().map(|c| json!({
@@ -263,6 +394,14 @@ fn free_slots(events: &[Event], date: NaiveDate, from_hour: u32, to_hour: u32, m
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_description_is_api_2() {
+        let d = nyx_actions::Description::from_value(&description(crate::APP_ID), None).unwrap();
+        assert!(d.action("calendar.delete").unwrap().asks());
+        assert!(!d.action("calendar.add").unwrap().asks());
+        assert_eq!(d.app.panel.as_ref().map(|p| p.id.as_str()), Some("calendar"));
+    }
 
     fn at(h: u32, m: u32) -> NaiveDateTime {
         NaiveDate::from_ymd_opt(2026, 10, 22).unwrap().and_hms_opt(h, m, 0).unwrap()

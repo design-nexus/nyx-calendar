@@ -75,6 +75,8 @@ fn main() -> glib::ExitCode {
             Err(e) => { eprintln!("Calendar synchronization: {e}"); glib::ExitCode::FAILURE }
         };
     }
+    let app_id = std::env::var("NYX_CALENDAR_APP_ID").unwrap_or_else(|_| APP_ID.to_string());
+    nyx_core::control::describe_if_asked(&control::description(&app_id));
     // The control tools as JSON, without a window (Nyx Assistant's abilities).
     if args.iter().any(|a| a == "--describe") {
         println!("{}", control::tools());
@@ -85,11 +87,10 @@ fn main() -> glib::ExitCode {
         unsafe { std::env::set_var("GSK_RENDERER", "ngl") };
     }
 
-    let app_id = std::env::var("NYX_CALENDAR_APP_ID").unwrap_or_else(|_| APP_ID.to_string());
     let app = gtk::Application::builder().application_id(app_id).flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE).build();
     app.connect_startup(|app| {
         theme::install();
-        nyx_core::control::serve_async(app, control::tools(), control::handle);
+        control::serve(app);
         start_reminders();
     });
     app.connect_command_line(|app, cl| {
