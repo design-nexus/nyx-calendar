@@ -29,7 +29,8 @@ pub fn tools() -> Value {
 }
 
 /// API 2: the tools with what they risk and how they're typed, the app, and the
-/// `upcoming` topic Glimpse's Calendar panel shows. Calendar answers while it runs.
+/// `upcoming` topic Glimpse's Calendar panel shows. D-Bus starts Calendar without its
+/// window for a call.
 pub fn description(app_id: &str) -> Value {
     let x = |risk: &str, extra: Value| {
         let mut v = json!({"risk": risk});
@@ -66,7 +67,7 @@ pub fn description(app_id: &str) -> Value {
     json!({
         "tools": list,
         "nyx": {"api": 2, "app": app_id, "name": "Calendar", "icon": crate::APP_ID, "namespaces": ["calendar"], "aliases": ["cal", "events"],
-                "bus_name": app_id, "activation": "running", "default": "calendar.search", "open": {"action": "calendar.open"},
+                "bus_name": app_id, "activation": "dbus", "default": "calendar.search", "open": {"action": "calendar.open"},
                 "topics": [{"name": "upcoming", "sensitive": true}],
                 "panel": {"id": "calendar", "topics": ["upcoming"], "size": {"min": [420, 320], "preferred": [500, 400]}}}
     })
@@ -85,12 +86,15 @@ pub fn serve(app: &gtk::Application) {
     let window_app = app.clone();
     let Some(service) = nyx_core::control::serve_with(app, description(&id), move |request, answer| {
         let changes = !matches!(request.action.as_str(), "calendar.list" | "calendar.read" | "calendar.next" | "calendar.search" | "calendar.free_slots" | "calendar.suggest_times" | "calendar.open");
-        handle_with(&window_app, &request.action, request.arguments, Box::new(move |r| {
-            answer(r.map_err(|e| nyx_actions::Error::new(nyx_actions::ErrorKind::Failed, e)));
-            if changes {
-                publish();
-            }
-        }));
+        let app = window_app.clone();
+        window::when_loaded(move || {
+            handle_with(&app, &request.action, request.arguments, Box::new(move |r| {
+                answer(r.map_err(|e| nyx_actions::Error::new(nyx_actions::ErrorKind::Failed, e)));
+                if changes {
+                    publish();
+                }
+            }));
+        });
     }) else {
         return;
     };
@@ -116,9 +120,11 @@ fn publish() {
     if !service.watched("upcoming") {
         return;
     }
-    handle("calendar.next", json!({"count": 12}), Box::new(move |r| {
-        service.publish("upcoming", r.unwrap_or_else(|e| json!({"error": e})));
-    }));
+    window::when_loaded(move || {
+        handle("calendar.next", json!({"count": 12}), Box::new(move |r| {
+            service.publish("upcoming", r.unwrap_or_else(|e| json!({"error": e})));
+        }));
+    });
 }
 
 fn handle_with(app: &gtk::Application, name: &str, args: Value, reply: Reply) {

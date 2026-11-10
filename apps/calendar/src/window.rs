@@ -157,8 +157,33 @@ pub fn nav() -> Option<gtk::Box> {
     ui().map(|u| u.borrow().nav.clone())
 }
 
+thread_local! {
+    /// The calendars as the worker last sent them, window or not (Calendar started by
+    /// D-Bus for a call); `None` until the first list.
+    static KNOWN: RefCell<Option<Vec<CalendarInfo>>> = const { RefCell::new(None) };
+    /// Calls waiting for that first list.
+    static WAITING: RefCell<Vec<Box<dyn FnOnce()>>> = const { RefCell::new(Vec::new()) };
+}
+
 pub fn calendars() -> Vec<CalendarInfo> {
-    ui().map(|u| u.borrow().calendars.clone()).unwrap_or_default()
+    KNOWN.with(|k| k.borrow().clone()).unwrap_or_default()
+}
+
+/// Run `f` once the worker has said which calendars there are: at once when it has,
+/// else when it does (starting it without a window), or after 8 s whatever happened.
+pub fn when_loaded(f: impl FnOnce() + 'static) {
+    if KNOWN.with(|k| k.borrow().is_some()) {
+        return f();
+    }
+    WAITING.with(|w| w.borrow_mut().push(Box::new(f)));
+    worker::start();
+    glib::timeout_add_local_once(std::time::Duration::from_secs(8), run_waiting);
+}
+
+fn run_waiting() {
+    for f in WAITING.with(|w| std::mem::take(&mut *w.borrow_mut())) {
+        f();
+    }
 }
 
 /// The user's own addresses, for invitations.
@@ -268,6 +293,19 @@ fn snapshot_and_quit(app: &gtk::Application, out: std::path::PathBuf) {
 
 /// Applies what the worker found.
 pub fn apply(update: Update) {
+    match &update {
+        Update::Calendars(list) => {
+            KNOWN.with(|k| *k.borrow_mut() = Some(list.clone()));
+            run_waiting();
+        }
+        Update::Unavailable(_) => {
+            KNOWN.with(|k| {
+                k.borrow_mut().get_or_insert_with(Vec::new);
+            });
+            run_waiting();
+        }
+        _ => {}
+    }
     let Some(ui) = ui() else { return };
     match update {
         Update::Unavailable(text) => {
