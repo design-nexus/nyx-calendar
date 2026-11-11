@@ -41,7 +41,7 @@ pub fn description(app_id: &str) -> Value {
     };
     let meta = [
         ("calendar.list", x("read_only", json!({"aliases": ["calendars"], "result": "object"}))),
-        ("calendar.read", x("read_only", json!({"aliases": [{"word": "today", "arguments": {}}, "day"], "result": "object"}))),
+        ("calendar.read", x("read_only", json!({"icon": "x-office-calendar-symbolic", "aliases": [{"word": "today", "arguments": {}}, "day"], "result": "object"}))),
         ("calendar.next", x("read_only", json!({"aliases": ["upcoming", "agenda"], "positional": ["count"], "result": "object"}))),
         ("calendar.search", x("read_only", json!({"aliases": ["find"], "positional": ["query"], "result": "object"}))),
         ("calendar.free_slots", x("read_only", json!({"aliases": ["free"], "positional": ["date"], "result": "object"}))),
