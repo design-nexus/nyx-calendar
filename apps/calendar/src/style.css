@@ -29,16 +29,23 @@ window.calendar-window .settings-navigation button.calendar-item {
 }
 
 /* Sidebar headings: an account's logo and address, the fold arrow on hover. */
+/* The line under the heading takes the group's section colour. */
 .settings-navigation .nav-heading {
   margin: 14px 0 4px;
-  padding: 0 0 0 6px;
+  padding: 0 0 2px 6px;
   min-height: 24px;
   border-spacing: 6px;
+  border-bottom: 1px solid transparent;
 }
 
-.settings-navigation .nav-heading button.nav-group-add {
-  margin-right: 0;
+window.calendar-window .settings-navigation .nav-heading button.nav-group-add {
+  margin: 0;
   min-width: 20px;
+  color: @theme_dim_text;
+}
+
+window.calendar-window .settings-navigation .nav-heading button.nav-group-add:hover {
+  color: @theme_text;
 }
 
 .settings-navigation .nav-heading-label {

@@ -793,11 +793,13 @@ fn heading_look(items: &[CalendarInfo], accounts: &std::collections::HashMap<Str
 }
 
 /// An account's heading, which folds its calendars away; folded, it counts them.
-fn group_heading(key: &str, items: &[CalendarInfo], add: bool, folded: bool) -> gtk::Widget {
+/// `section` colours its label and the line under it.
+fn group_heading(key: &str, items: &[CalendarInfo], add: bool, folded: bool, section: &str) -> gtk::Widget {
     let accounts = ui().map(|u| u.borrow().account_info.clone()).unwrap_or_default();
     let (icon, text, tip) = heading_look(items, &accounts, key);
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     row.add_css_class("nav-heading");
+    row.add_css_class("nav-group-row");
     if folded {
         row.add_css_class("folded");
     }
@@ -838,6 +840,7 @@ fn group_heading(key: &str, items: &[CalendarInfo], add: bool, folded: bool) -> 
     click.connect_released(move |_, _, _, _| toggle_group_folded(&k));
     label.add_controller(click);
     crate::menus::attach_group(&row, &text, items);
+    nyx_ui::sidebar::set_section(&row, section);
     row.upcast()
 }
 
@@ -885,6 +888,7 @@ fn rebuild_nav() {
     if !calendars.is_empty() && !sets.is_empty() {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         row.add_css_class("nav-heading");
+        row.add_css_class("nav-group-row");
         let icon = gtk::Image::from_icon_name("view-list-symbolic");
         icon.add_css_class("nav-heading-icon");
         row.append(&icon);
@@ -897,6 +901,7 @@ fn rebuild_nav() {
         plus.add_css_class("nav-group-add");
         plus.connect_clicked(|_| save_set());
         row.append(&plus);
+        nyx_ui::sidebar::set_section(&row, "sets");
         list.append(&row);
         let shown: Vec<String> = calendars.iter().filter(|c| c.selected).map(|c| c.uid.clone()).collect();
         let all = calendars.iter().all(|c| c.selected);
@@ -944,7 +949,9 @@ fn rebuild_nav() {
     let folded_groups = prefs::get().collapsed_groups;
     for (i, (key, items)) in groups.iter().enumerate() {
         let folded = folded_groups.contains(key);
-        list.append(&group_heading(key, items, i == 0, folded));
+        // The first account in the app's accent, the others through the swatches.
+        let section = if i == 0 { nyx_ui::sidebar::ACCENT_SECTION.to_string() } else { nyx_ui::sidebar::rotating_section(i - 1) };
+        list.append(&group_heading(key, items, i == 0, folded, &section));
         if folded {
             continue;
         }
