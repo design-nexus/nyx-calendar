@@ -100,6 +100,8 @@ struct Ui {
     nav_toggle: gtk::Button,
     /// Each online account's provider and address, by account id, for the headings.
     account_info: std::collections::HashMap<String, (String, String)>,
+    /// The window's frame (nyx_ui::frame), whose sheet widens while the sidebar is in the drawer.
+    frame: gtk::Box,
     /// Holds the sidebar beside the calendar on wide windows.
     body: gtk::Box,
     /// Holds the sidebar over the calendar on narrow windows.
@@ -1123,15 +1125,20 @@ fn build(app: &gtk::Application) {
     content.append(&banners);
     content.append(&pages);
 
-    let body = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    body.append(&nav);
-    body.append(&content);
+    // The header: the sidebar button, where you are in time, the view, New event and Settings.
+    let header = nyx_ui::chrome::app_header(&window, "x-office-calendar-symbolic", "Calendar");
+    let frame = nyx_ui::frame::AppFrame::new(&header.root);
+    frame.set_sidebar(&nav);
+    frame.set_page(&content);
+    let body = frame.body.clone();
 
     // Narrow windows: the sidebar slides over the calendar, which dims behind it.
     // Both stay untargetable while closed, or they'd swallow the calendar's clicks.
     let body_overlay = gtk::Overlay::new();
     body_overlay.set_vexpand(true);
+    frame.root.remove(&body);
     body_overlay.set_child(Some(&body));
+    frame.root.append(&body_overlay);
     let dim = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     dim.add_css_class("drawer-scrim");
     dim.set_hexpand(true);
@@ -1152,8 +1159,6 @@ fn build(app: &gtk::Application) {
         .build();
     body_overlay.add_overlay(&drawer);
 
-    // The header: the sidebar button, where you are in time, the view, New event and Settings.
-    let header = nyx_ui::chrome::app_header(&window, "x-office-calendar-symbolic", "Calendar");
     let sidebar_button = nyx_ui::widgets::bar_button("sidebar-show-symbolic", "Show the sidebar (Ctrl+B)");
     sidebar_button.set_visible(false);
     sidebar_button.connect_clicked(|_| toggle_sidebar());
@@ -1163,14 +1168,7 @@ fn build(app: &gtk::Application) {
     header.end.append(&new_button);
     header.end.append(&nyx_ui::chrome::settings_button(settings_dialog::open));
 
-    let frame = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    frame.add_css_class("window-frame");
-    frame.append(&header.root);
-    frame.append(&body_overlay);
-
-    let overlay = gtk::Overlay::new();
-    overlay.set_child(Some(&frame));
-    window.set_child(Some(&overlay));
+    let overlay = frame.install(&window);
     install_keys(&window, &search);
 
     let today = Local::now().date_naive();
@@ -1184,6 +1182,7 @@ fn build(app: &gtk::Application) {
         nav_scroll: nav_scroll.clone(),
         nav_toggle: collapse,
         account_info: Default::default(),
+        frame: frame.root.clone(),
         body,
         drawer,
         scrim,
@@ -1275,6 +1274,11 @@ fn apply_sidebar() {
         u.nav.remove_css_class("drawer");
     }
     u.nav.set_visible(narrow || !collapsed);
+    if narrow || collapsed {
+        u.frame.add_css_class("no-sidebar");
+    } else {
+        u.frame.remove_css_class("no-sidebar");
+    }
     u.drawer.set_reveal_child(open);
     u.drawer.set_can_target(open);
     u.scrim.set_reveal_child(open);
