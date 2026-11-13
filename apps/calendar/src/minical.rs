@@ -1,4 +1,4 @@
-//! The sidebar's month: pick a day, see where the views are.
+//! The sidebar's month: pick a day, see where the views are and which days are busy.
 
 use crate::draw::{self, Style};
 use crate::prefs;
@@ -7,6 +7,7 @@ use chrono::{Datelike, Local, Months, NaiveDate};
 use gtk::prelude::*;
 use nyx_calendar_core::month_weeks;
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::rc::Rc;
 
 const CELL_H: f64 = 26.0;
@@ -16,6 +17,8 @@ struct Data {
     month: NaiveDate,
     /// The days the main view shows.
     range: (NaiveDate, NaiveDate),
+    /// Days with something on, marked with a dot.
+    busy: HashSet<NaiveDate>,
 }
 
 #[derive(Clone)]
@@ -24,13 +27,21 @@ pub struct MiniCalendar {
     title: gtk::Label,
     area: gtk::DrawingArea,
     data: Rc<RefCell<Data>>,
+    /// Told when another month comes into view, to find its busy days.
+    on_month: Rc<RefCell<Option<Hook>>>,
 }
+
+type Hook = Box<dyn Fn()>;
 
 impl MiniCalendar {
     pub fn new(on_pick: impl Fn(NaiveDate) + 'static) -> Self {
         let today = Local::now().date_naive();
-        let data = Rc::new(RefCell::new(Data { month: today.with_day(1).unwrap_or(today), range: (today, today) }));
-        let root = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        let data = Rc::new(RefCell::new(Data {
+            month: today.with_day(1).unwrap_or(today),
+            range: (today, today),
+            busy: HashSet::new(),
+        }));
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 2);
         root.add_css_class("mini-calendar");
         let head = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         let title = widgets::label("", "mini-title");
@@ -64,7 +75,7 @@ impl MiniCalendar {
         });
         area.add_controller(click);
 
-        let view = Self { root, title, area, data };
+        let view = Self { root, title, area, data, on_month: Rc::default() };
         for (button, months) in [(&prev, -1i32), (&next, 1)] {
             let v = view.clone();
             button.connect_clicked(move |_| v.shift(months));
@@ -75,15 +86,38 @@ impl MiniCalendar {
         view
     }
 
+    /// Calls `f` whenever another month comes into view.
+    pub fn connect_month(&self, f: impl Fn() + 'static) {
+        *self.on_month.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// The days the month's grid shows, the last one excluded.
+    pub fn grid(&self) -> (NaiveDate, NaiveDate) {
+        let month = self.data.borrow().month;
+        let rows = month_weeks(month, prefs::first_weekday());
+        let first = rows.first().map(|r| r[0]).unwrap_or(month);
+        let last = rows.last().map(|r| r[6]).unwrap_or(month);
+        (first, last + chrono::Duration::days(1))
+    }
+
+    pub fn set_busy(&self, busy: HashSet<NaiveDate>) {
+        self.data.borrow_mut().busy = busy;
+        self.area.queue_draw();
+    }
+
     /// Marks the days the main view shows and turns to that month.
     pub fn show(&self, from: NaiveDate, to: NaiveDate, anchor: NaiveDate) {
-        {
+        let turned = {
             let mut d = self.data.borrow_mut();
             d.range = (from, to);
-            d.month = anchor.with_day(1).unwrap_or(anchor);
-        }
+            let month = anchor.with_day(1).unwrap_or(anchor);
+            std::mem::replace(&mut d.month, month) != month
+        };
         self.update_title();
         self.area.queue_draw();
+        if turned {
+            self.month_changed();
+        }
     }
 
     fn shift(&self, months: i32) {
@@ -97,6 +131,13 @@ impl MiniCalendar {
         }
         self.update_title();
         self.area.queue_draw();
+        self.month_changed();
+    }
+
+    fn month_changed(&self) {
+        if let Some(f) = self.on_month.borrow().as_ref() {
+            f();
+        }
     }
 
     fn update_title(&self) {
@@ -106,22 +147,15 @@ impl MiniCalendar {
 
 fn draw_mini(area: &gtk::DrawingArea, cr: &gtk::cairo::Context, width: f64, d: &Data) {
     let c = draw::colors();
+    let tertiary = c.tertiary;
     let rows = month_weeks(d.month, prefs::first_weekday());
     let cw = width / 7.0;
     let today = Local::now().date_naive();
     if let Some(first) = rows.first() {
         for (i, day) in first.iter().enumerate() {
-            draw::set(cr, c.dim);
-            let letter: String = day.format("%a").to_string().chars().take(2).collect();
-            draw::text(
-                area,
-                cr,
-                &letter,
-                i as f64 * cw,
-                2.0,
-                cw,
-                Style { scale: 0.72, bold: true, center: true, ..draw::NORMAL },
-            );
+            draw::set(cr, tertiary);
+            let letter: String = day.format("%a").to_string().chars().take(1).collect();
+            draw::text(area, cr, &letter, i as f64 * cw, 3.0, cw, Style { scale: 0.77, bold: true, center: true, ..draw::NORMAL });
         }
     }
     let (from, to) = d.range;
@@ -130,24 +164,30 @@ fn draw_mini(area: &gtk::DrawingArea, cr: &gtk::cairo::Context, width: f64, d: &
         // The shown range as one band per row.
         let inside: Vec<usize> = (0..7).filter(|i| row[*i] >= from && row[*i] < to).collect();
         if let (Some(a), Some(b)) = (inside.first(), inside.last()) {
-            draw::set(cr, c.bg.mix(c.accent, 0.18));
-            draw::rounded(cr, *a as f64 * cw + 1.0, y + 2.0, (b - a + 1) as f64 * cw - 2.0, CELL_H - 4.0, 6.0);
+            draw::set(cr, c.bg.mix(c.accent, 0.16));
+            draw::rounded(cr, *a as f64 * cw, y, (b - a + 1) as f64 * cw, CELL_H, 7.0);
             let _ = cr.fill();
         }
         for (i, day) in row.iter().enumerate() {
             let x = i as f64 * cw;
-            if *day == today {
+            let inside_month = day.month() == d.month.month();
+            if *day == today && inside_month {
                 draw::set(cr, c.accent);
-                draw::rounded(cr, x + (cw - 24.0) / 2.0, y + 3.0, 24.0, CELL_H - 6.0, 6.0);
+                cr.arc(x + cw / 2.0, y + CELL_H / 2.0, 12.0, 0.0, std::f64::consts::TAU);
                 let _ = cr.fill();
                 draw::set(cr, c.on_accent);
-            } else if day.month() != d.month.month() {
-                draw::set(cr, c.dim);
+            } else if !inside_month {
+                draw::set(cr, tertiary.mix(c.bg, 0.4));
             } else {
                 draw::set(cr, c.text);
             }
-            let style = Style { scale: 0.84, bold: *day == today, center: true, ..draw::NORMAL };
+            let style = Style { scale: 0.92, bold: *day == today, center: true, ..draw::NORMAL };
             draw::text(area, cr, &day.day().to_string(), x, y + 5.0, cw, style);
+            if inside_month && *day != today && d.busy.contains(day) {
+                draw::set(cr, tertiary);
+                cr.arc(x + cw / 2.0, y + CELL_H - 3.5, 1.5, 0.0, std::f64::consts::TAU);
+                let _ = cr.fill();
+            }
         }
     }
 }

@@ -120,6 +120,7 @@ mod tests {
             selected: true,
             group: None,
             account: None,
+            provider: "native".into(),
             needs_sign_in: false,
             offline: false,
             read_only: false,

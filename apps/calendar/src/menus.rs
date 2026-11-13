@@ -285,30 +285,36 @@ pub fn attach_calendar(button: &gtk::Button, cal: &CalendarInfo) {
 /// An account's heading in the sidebar: its calendars together.
 pub fn attach_group(row: &gtk::Box, title: &str, items: &[CalendarInfo]) {
     let (title, items) = (title.to_string(), items.to_vec());
-    widgets::on_right_click(row, move |w, x, y| {
-        let Some((popover, body)) = card(w, x, y) else { return };
-        let count = if items.len() == 1 { "1 calendar".to_string() } else { format!("{} calendars", items.len()) };
-        card_title(&body, &title, &count);
-        let uids: Vec<String> = items.iter().map(|c| c.uid.clone()).collect();
-        let u = uids.clone();
-        card_action(&body, &popover, "view-reveal-symbolic", "Show all", None, false, move || {
-            for uid in &u {
-                worker::set_selected(uid.clone(), true);
-            }
-        });
-        let u = uids.clone();
-        card_action(&body, &popover, "view-conceal-symbolic", "Hide all", None, false, move || {
-            for uid in &u {
-                worker::set_selected(uid.clone(), false);
-            }
-        });
-        card_action(&body, &popover, "view-app-grid-symbolic", "Show all calendars", None, false, || window::show_set(None));
-        card_action(&body, &popover, "view-list-symbolic", "Save shown calendars as a set…", None, false, window::save_set);
-        card_divider(&body);
-        let (u, name) = (uids.clone(), title.clone());
-        card_action(&body, &popover, "system-shutdown-symbolic", "Turn all off", None, true, move || turn_off_all(&u, &name));
-        popover.popup();
+    widgets::on_right_click(row, move |w, x, y| group_card(w, x, y, &title, &items));
+}
+
+/// The card for an account's calendars, at `(x, y)` in `anchor` (its heading's ⋯ or a right-click).
+pub fn group_card(anchor: &gtk::Widget, x: f64, y: f64, title: &str, items: &[CalendarInfo]) {
+    let Some((popover, body)) = card(anchor, x, y) else { return };
+    let count = if items.len() == 1 { "1 calendar".to_string() } else { format!("{} calendars", items.len()) };
+    card_title(&body, title, &count);
+    let uids: Vec<String> = items.iter().map(|c| c.uid.clone()).collect();
+    let u = uids.clone();
+    card_action(&body, &popover, "view-reveal-symbolic", "Show all", None, false, move || {
+        for uid in &u {
+            worker::set_selected(uid.clone(), true);
+        }
     });
+    let u = uids.clone();
+    card_action(&body, &popover, "view-conceal-symbolic", "Hide all", None, false, move || {
+        for uid in &u {
+            worker::set_selected(uid.clone(), false);
+        }
+    });
+    card_action(&body, &popover, "view-app-grid-symbolic", "Show all calendars", None, false, || window::show_set(None));
+    card_action(&body, &popover, "view-list-symbolic", "Save shown calendars as a set…", None, false, window::save_set);
+    if items.iter().any(|c| c.account.is_some()) {
+        card_action(&body, &popover, "list-add-symbolic", "Add an account…", None, false, window::open_online_accounts);
+    }
+    card_divider(&body);
+    let (u, name) = (uids.clone(), title.to_string());
+    card_action(&body, &popover, "system-shutdown-symbolic", "Turn all off", None, true, move || turn_off_all(&u, &name));
+    popover.popup();
 }
 
 /// Switches several calendars off (not loaded or synced, in every app), with Undo.

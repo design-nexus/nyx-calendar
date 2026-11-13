@@ -25,6 +25,7 @@ use std::rc::Rc;
 
 pub const SHORTCUTS: &[(&[&str], &str)] = &[
     (&["N"], "New event"),
+    (&["Q"], "Quick add (“Lunch with Sam tomorrow at 1”)"),
     (&["T"], "Go to today"),
     (&["J"], "Next day, week or month"),
     (&["K"], "Previous day, week or month"),
@@ -38,7 +39,7 @@ pub const SHORTCUTS: &[(&[&str], &str)] = &[
     (&["R"], "Refresh calendars"),
     (&["Ctrl", "F"], "Find events (Enter searches the year)"),
     (&["Ctrl", "I"], "Import an .ics file"),
-    (&["Esc"], "Clear the search or close the sidebar"),
+    (&["Esc"], "Close the search or the sidebar"),
     (&["Ctrl", "B"], "Show or hide the sidebar"),
     (&["Ctrl", ","], "Settings"),
     (&["F1"], "Show keyboard shortcuts"),
@@ -97,7 +98,18 @@ struct Ui {
     nav: gtk::Box,
     nav_list: gtk::Box,
     nav_scroll: gtk::ScrolledWindow,
-    nav_toggle: gtk::Button,
+    /// The header's app name, which narrow windows leave out.
+    app_title: Option<gtk::Widget>,
+    /// The header's left and right groups, to see whether Quick add fits between them.
+    header_sides: (gtk::Widget, gtk::Widget),
+    quick_field: gtk::Entry,
+    quick_holder: gtk::ScrolledWindow,
+    /// N's hint on New event, left out of narrow windows.
+    new_key: gtk::Label,
+    /// The sidebar's foot: whether the calendars are current; clicking refreshes.
+    foot_icon: gtk::Image,
+    /// When the calendars were last loaded or refreshed without a problem.
+    synced: Option<chrono::DateTime<Local>>,
     /// Each online account's provider and address, by account id, for the headings.
     account_info: std::collections::HashMap<String, (String, String)>,
     /// The window's frame (nyx_ui::frame), whose sheet widens while the sidebar is in the drawer.
@@ -246,6 +258,18 @@ pub fn present(app: &gtk::Application, section: Option<&str>) {
     if let Some(out) = snapshot {
         snapshot_and_quit(app, std::path::PathBuf::from(out));
     }
+    // Layout checks of the event popover: `CALENDAR_OPEN_EVENT=<title>` opens that event
+    // in the day or week view once it has loaded.
+    if first && let Ok(title) = std::env::var("CALENDAR_OPEN_EVENT") {
+        glib::timeout_add_local_once(std::time::Duration::from_millis(3000), move || {
+            if let Some(ui) = self::ui() {
+                let days = ui.borrow().days.clone();
+                if !days.open_where(|e| e.title == title) {
+                    eprintln!("nyx-calendar: no “{title}” on screen");
+                }
+            }
+        });
+    }
 }
 
 fn env_num(key: &str, default: i32) -> i32 {
@@ -316,13 +340,19 @@ pub fn apply(update: Update) {
             u.loaded = true;
         }
         Update::Calendars(list) => {
-            {
+            let changed = {
                 let mut u = ui.borrow_mut();
                 u.unavailable = None;
                 u.loaded = true;
+                u.synced.get_or_insert_with(Local::now);
+                let changed = u.calendars != list;
                 u.calendars = list;
-            }
+                changed
+            };
             refresh_account_info();
+            if changed {
+                refresh_busy();
+            }
         }
         Update::Identities(me) => {
             ui.borrow_mut().me = me;
@@ -392,8 +422,12 @@ fn show_view() {
         u.agenda.set(today - Duration::days(SEARCH_DAYS), 2 * SEARCH_DAYS, found, &calendars, &format!("Nothing matches “{q}”"));
         u.pages.set_visible_child_name("agenda");
         let results = format!("Results for “{q}”");
-        u.title.set_text(&results);
-        u.title.set_tooltip_text(Some(&results));
+        let short: String = if q.chars().count() > 24 { format!("{}…", q.chars().take(23).collect::<String>()) } else { q.clone() };
+        u.title.set_text(&format!("Results for “{short}”"));
+        u.title.set_tooltip_text(Some(&match found.len() {
+            1 => format!("{results}: 1 event in the year either side of today"),
+            n => format!("{results}: {n} events in the year either side of today"),
+        }));
         return;
     }
     let mut all = u.events.clone();
@@ -424,26 +458,49 @@ fn show_view() {
     set_view_title(&u);
 }
 
-/// The toolbar title; narrow windows get the short form, with the full one as its tooltip.
+/// The header's title; narrow windows get the short form, with the full one as its
+/// tooltip. A week's tooltip says which week of the year it is.
 fn set_view_title(u: &Ui) {
     let full = view_title(u.view, u.anchor, u.range);
+    let week = (u.view == ViewKind::Week).then(|| format!("Week {}", u.range.0.iso_week().week()));
     if NARROW.with(|n| n.get()) {
         u.title.set_text(&short_title(u.view, u.anchor, u.range));
-        u.title.set_tooltip_text(Some(&full));
+        u.title.set_tooltip_text(Some(&week.map(|w| format!("{full} · {w}")).unwrap_or(full)));
     } else {
         u.title.set_text(&full);
-        u.title.set_tooltip_text(None);
+        u.title.set_tooltip_text(week.as_deref());
+    }
+    fit_quick_add(u);
+}
+
+/// Quick add shows in a wide window's header while there's room for it beside the
+/// rest; the header's parts don't give way to each other.
+fn fit_quick_add(u: &Ui) {
+    let narrow = NARROW.with(|n| n.get());
+    let width = if u.window.width() > 0 { u.window.width() } else { u.window.default_width() };
+    let natural = |w: &gtk::Widget| w.measure(gtk::Orientation::Horizontal, -1).1;
+    let field = natural(u.quick_field.upcast_ref());
+    let shown = u.quick_holder.is_visible();
+    let left = natural(&u.header_sides.0);
+    let right = natural(&u.header_sides.1) - if shown { field + 2 } else { 0 };
+    // The header's padding, and a little to spare.
+    let fits = left + right + field + 2 + 40 <= width;
+    if u.quick_holder.is_visible() != (!narrow && fits) {
+        u.quick_holder.set_visible(!narrow && fits);
     }
 }
 
-/// Fits beside the view switcher in an 800 px window: "Oct 2026", "Oct – Nov", "Sat, Oct 24".
+/// Fits beside the view switcher in an 800 px window: "Nov 9 – 13", "Oct 26 – Nov 1",
+/// "Oct 2026", "Sat, Oct 24".
 fn short_title(view: ViewKind, anchor: NaiveDate, (from, to): (NaiveDate, NaiveDate)) -> String {
     let last = to - Duration::days(1);
     match view {
         ViewKind::Day => anchor.format("%a, %b %-d").to_string(),
         ViewKind::Month => anchor.format("%b %Y").to_string(),
         ViewKind::Year => anchor.format("%Y").to_string(),
-        ViewKind::Week | ViewKind::Agenda => {
+        ViewKind::Week if from.month() == last.month() => format!("{} – {}", from.format("%b %-d"), last.format("%-d")),
+        ViewKind::Week => format!("{} – {}", from.format("%b %-d"), last.format("%b %-d")),
+        ViewKind::Agenda => {
             if from.month() == last.month() && from.year() == last.year() {
                 from.format("%b %Y").to_string()
             } else {
@@ -453,10 +510,21 @@ fn short_title(view: ViewKind, anchor: NaiveDate, (from, to): (NaiveDate, NaiveD
     }
 }
 
+/// The five days a narrow window's week shows: Monday to Friday, or from a weekend
+/// day five days on, so the day asked for is always among them.
+fn five_days(anchor: NaiveDate) -> (NaiveDate, NaiveDate) {
+    let from = if anchor.weekday().number_from_monday() <= 5 {
+        week_start(anchor, chrono::Weekday::Mon)
+    } else {
+        anchor
+    };
+    (from, from + Duration::days(5))
+}
+
 fn view_title(view: ViewKind, anchor: NaiveDate, (from, to): (NaiveDate, NaiveDate)) -> String {
     let last = to - Duration::days(1);
     match view {
-        ViewKind::Day => anchor.format("%A, %B %-d, %Y").to_string(),
+        ViewKind::Day => anchor.format("%a, %b %-d, %Y").to_string(),
         ViewKind::Month => anchor.format("%B %Y").to_string(),
         ViewKind::Year => anchor.format("%Y").to_string(),
         ViewKind::Week | ViewKind::Agenda => {
@@ -474,6 +542,7 @@ fn view_title(view: ViewKind, anchor: NaiveDate, (from, to): (NaiveDate, NaiveDa
 fn range_for(view: ViewKind, anchor: NaiveDate) -> (NaiveDate, NaiveDate) {
     match view {
         ViewKind::Day => (anchor, anchor + Duration::days(1)),
+        ViewKind::Week if NARROW.with(|n| n.get()) => five_days(anchor),
         ViewKind::Week => {
             let s = week_start(anchor, prefs::first_weekday());
             (s, week_days(s)[6] + Duration::days(1))
@@ -575,7 +644,11 @@ fn refresh() {
     refresh_status();
     worker::refresh(|problems| {
         if let Some(state) = self::ui() {
-            state.borrow_mut().refreshing = false;
+            let mut u = state.borrow_mut();
+            u.refreshing = false;
+            if problems.is_empty() {
+                u.synced = Some(Local::now());
+            }
         }
         if problems.is_empty() {
             toast("Calendars refreshed.");
@@ -607,30 +680,35 @@ fn search_year(query: String) {
     );
 }
 
+/// The sidebar's foot: refreshing, offline, or up to date and since when.
 fn refresh_status() {
     let Some(ui) = ui() else { return };
     let u = ui.borrow();
-    let mut parts = Vec::new();
-    let count = match &u.results {
-        Some((_, found)) => found.len(),
-        None => filtered(&u.events, &u.search.text()).len(),
-    };
-    if u.view == ViewKind::Week && u.results.is_none() {
-        parts.push(format!("Week {}", u.range.0.iso_week().week()));
-    }
-    parts.push(match count {
-        0 => "No events".into(),
-        1 => "1 event".into(),
-        n => format!("{n} events"),
-    });
-    if u.refreshing {
-        parts.push("Refreshing…".into());
+    let (icon, text, class) = if u.refreshing {
+        ("view-refresh-symbolic", "Refreshing…".to_string(), "busy")
+    } else if u.unavailable.is_some() {
+        ("dialog-warning-symbolic", "Calendar data isn't available".to_string(), "warning")
     } else if u.calendars.iter().any(|c| c.selected && c.offline) {
-        parts.push("Offline".into());
+        ("network-offline-symbolic", "Offline · showing saved copies".to_string(), "warning")
+    } else if u.calendars.iter().any(|c| c.needs_sign_in) {
+        ("dialog-warning-symbolic", "An account needs you to sign in".to_string(), "warning")
+    } else {
+        let ago = u.synced.map(|at| (Local::now() - at).num_minutes()).map(|m| match m {
+            ..=0 => "just now".to_string(),
+            1..=59 => format!("{m} min ago"),
+            60..=1439 => format!("{} h ago", m / 60),
+            _ => format!("{} days ago", m / 1440),
+        });
+        ("object-select-symbolic", ago.map(|a| format!("Up to date · {a}")).unwrap_or_else(|| "Loading…".into()), "ok")
+    };
+    u.foot_icon.set_icon_name(Some(icon));
+    for c in ["busy", "warning", "ok"] {
+        u.foot_icon.remove_css_class(c);
     }
+    u.foot_icon.add_css_class(class);
     STATUS.with(|s| {
         if let Some(label) = s.borrow().as_ref() {
-            label.set_text(&parts.join(" · "));
+            label.set_text(&text);
         }
     });
 }
@@ -644,12 +722,48 @@ pub fn open_online_accounts() {
     }
 }
 
-/// Quick create from the toolbar's + (or N).
+/// The header's New event (or N): the editor, for a new event.
 pub(crate) fn new_event() {
+    close_drawer();
+    crate::editor::open(None, None);
+}
+
+/// Quick add (Q): the header's field, or on narrow windows, which leave it out, the
+/// same card from New event.
+pub(crate) fn quick_add() {
     let Some(ui) = ui() else { return };
-    let button = ui.borrow().new_button.clone();
+    let (field, button) = (ui.borrow().quick_field.clone(), ui.borrow().new_button.clone());
+    if field.is_mapped() {
+        field.grab_focus();
+        return;
+    }
     let rect = gdk::Rectangle::new(0, 0, button.width(), button.height());
     quick::show(button.upcast_ref(), rect, None);
+}
+
+/// Marks the days in the sidebar's month that have something on.
+fn refresh_busy() {
+    let Some(ui) = ui() else { return };
+    let mini = ui.borrow().mini.clone();
+    let (from, to) = mini.grid();
+    worker::ask(
+        move || worker::events_between(from, to).iter().flat_map(|e| {
+            let (a, b) = e.days();
+            a.iter_days().take_while(move |d| *d <= b).collect::<Vec<_>>()
+        }).collect::<std::collections::HashSet<NaiveDate>>(),
+        move |busy| {
+            if mini.grid() == (from, to) {
+                mini.set_busy(busy);
+            }
+        },
+    );
+}
+
+/// Redraws the day and week grid (an event's popover opened or closed).
+pub(crate) fn repaint_days() {
+    if let Some(ui) = ui() {
+        ui.borrow().days.redraw();
+    }
 }
 
 // ---------- Banners ----------
@@ -695,38 +809,31 @@ fn rebuild_banners() {
 
 // ---------- Sidebar ----------
 
-fn nav_button(icon: &str, title: &str, tooltip: &str) -> gtk::Button {
-    let button = gtk::Button::new();
-    button.add_css_class("nav-item");
-    let content = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-    content.append(&gtk::Image::from_icon_name(icon));
-    let label = widgets::label(title, "nav-label");
-    label.set_hexpand(true);
-    label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    content.append(&label);
-    button.set_child(Some(&content));
-    button.set_tooltip_text(Some(tooltip));
-    button
-}
-
-/// A calendar's dot in its colour: filled when shown, a ring when hidden.
-fn dot(color: Option<&str>, shown: bool) -> gtk::DrawingArea {
-    const SIZE: f64 = 10.0;
+/// A calendar's tick box in its colour: filled with a tick when shown, an outline when hidden.
+fn tick_box(color: Option<&str>, shown: bool) -> gtk::DrawingArea {
+    const SIZE: f64 = 16.0;
     let area = gtk::DrawingArea::new();
-    area.set_content_width(16);
-    area.set_content_height(16);
+    area.set_content_width(SIZE as i32);
+    area.set_content_height(SIZE as i32);
     area.set_valign(gtk::Align::Center);
     let color = color.map(Rgb::hex);
-    area.set_draw_func(move |_, cr, w, h| {
+    area.set_draw_func(move |_, cr, _, _| {
         let c = color.unwrap_or_else(|| Rgb::hex(&nyx_theme::palette().accent));
-        let (cx, cy) = (w as f64 / 2.0, h as f64 / 2.0);
         cr.set_source_rgb(c.0, c.1, c.2);
         if shown {
-            cr.arc(cx, cy, SIZE / 2.0, 0.0, std::f64::consts::TAU);
+            crate::draw::rounded(cr, 0.0, 0.0, SIZE, SIZE, 5.0);
             let _ = cr.fill();
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.set_line_width(2.0);
+            cr.set_line_cap(gtk::cairo::LineCap::Round);
+            cr.set_line_join(gtk::cairo::LineJoin::Round);
+            cr.move_to(4.5, 8.4);
+            cr.line_to(7.0, 10.9);
+            cr.line_to(11.6, 5.6);
+            let _ = cr.stroke();
         } else {
             cr.set_line_width(1.5);
-            cr.arc(cx, cy, SIZE / 2.0 - 0.75, 0.0, std::f64::consts::TAU);
+            crate::draw::rounded(cr, 0.75, 0.75, SIZE - 1.5, SIZE - 1.5, 4.5);
             let _ = cr.stroke();
         }
     });
@@ -744,8 +851,9 @@ fn calendar_button(cal: &CalendarInfo) -> gtk::Button {
     // scrolls the sidebar.
     button.set_focus_on_click(false);
     let content = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-    content.append(&dot(cal.color.as_deref(), cal.selected));
-    let label = widgets::label(&cal.name, "nav-label");
+    content.append(&tick_box(cal.color.as_deref(), cal.selected));
+    let name = display_name(cal);
+    let label = widgets::label(&name, "nav-label");
     label.set_hexpand(true);
     label.set_xalign(0.0);
     label.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -763,7 +871,7 @@ fn calendar_button(cal: &CalendarInfo) -> gtk::Button {
     }
     button.set_child(Some(&content));
     let verb = if cal.selected { "Hide" } else { "Show" };
-    button.set_tooltip_text(Some(&format!("{verb} {}", cal.name)));
+    button.set_tooltip_text(Some(&format!("{verb} {name}")));
     let uid = cal.uid.clone();
     let selected = cal.selected;
     button.connect_clicked(move |_| worker::set_selected(uid.clone(), !selected));
@@ -771,77 +879,169 @@ fn calendar_button(cal: &CalendarInfo) -> gtk::Button {
     button
 }
 
+/// A calendar's name in the sidebar: an account's own calendar, which providers name
+/// after the address already in its heading, is its main calendar.
+pub(crate) fn display_name(cal: &CalendarInfo) -> String {
+    if cal.account.is_some() && cal.name.contains('@') && cal.group.as_deref().is_some_and(|g| g.eq_ignore_ascii_case(&cal.name)) {
+        "Main calendar".into()
+    } else {
+        cal.name.clone()
+    }
+}
+
 /// The calendars copied from the old storage by nyx-pim-migrate; nothing syncs them.
 pub(crate) fn is_imported(cal: &CalendarInfo) -> bool {
     cal.uid.starts_with("import:")
 }
 
-/// A sidebar heading: its icon, text and tooltip.
-fn heading_look(items: &[CalendarInfo], accounts: &std::collections::HashMap<String, (String, String)>, key: &str) -> (gtk::Widget, String, Option<&'static str>) {
-    if items.iter().all(is_imported) {
-        let icon = gtk::Image::from_icon_name("folder-download-symbolic");
-        let tip = "A one-time local copy of your old calendars, made when Calendar moved to Nyx storage. It doesn't sync.";
-        return (icon.upcast(), "Imported (not syncing)".into(), Some(tip));
-    }
-    if let Some((provider, identity)) = items.first().and_then(|c| c.account.as_ref()).and_then(|id| accounts.get(id)) {
-        return (crate::account_logo::image(provider, 16).upcast(), identity.clone(), None);
-    }
-    if items.iter().any(|c| c.account.is_some()) {
-        return (crate::account_logo::image("", 16).upcast(), key.to_string(), None);
-    }
-    (gtk::Image::from_icon_name("computer-symbolic").upcast(), key.to_string(), None)
+/// What a group of calendars is: an online account, this computer, or the imported copy.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GroupKind {
+    Account,
+    Local,
+    Imported,
 }
 
-/// An account's heading, which folds its calendars away; folded, it counts them.
-/// `section` colours its label and the line under it.
-fn group_heading(key: &str, items: &[CalendarInfo], add: bool, folded: bool, section: &str) -> gtk::Widget {
-    let accounts = ui().map(|u| u.borrow().account_info.clone()).unwrap_or_default();
-    let (icon, text, tip) = heading_look(items, &accounts, key);
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    row.add_css_class("nav-heading");
-    row.add_css_class("nav-group-row");
+fn group_kind(items: &[CalendarInfo]) -> GroupKind {
+    if items.iter().all(is_imported) {
+        GroupKind::Imported
+    } else if items.iter().any(|c| c.account.is_some() || !matches!(c.provider.as_str(), "" | "native" | "local")) {
+        GroupKind::Account
+    } else {
+        GroupKind::Local
+    }
+}
+
+/// A heading's text ("Google · alex.rivera"; the group label folds it to capitals) and
+/// its tooltip, which has the whole address.
+fn heading_text(kind: GroupKind, items: &[CalendarInfo], key: &str) -> (String, Option<String>) {
+    match kind {
+        GroupKind::Imported => (
+            "Imported · not syncing".into(),
+            Some("A one-time local copy of your old calendars, made when Calendar moved to Nyx storage. It doesn't sync.".into()),
+        ),
+        GroupKind::Local => ("On this computer".into(), None),
+        GroupKind::Account => {
+            let accounts = ui().map(|u| u.borrow().account_info.clone()).unwrap_or_default();
+            let first = items.first();
+            let known = first.and_then(|c| c.account.as_ref()).and_then(|id| accounts.get(id));
+            let provider = known.map(|(p, _)| p.as_str()).or(first.map(|c| c.provider.as_str())).unwrap_or("");
+            let identity = known.map(|(_, i)| i.as_str()).unwrap_or(key);
+            let name = crate::settings_page::provider_name(provider);
+            let short = identity.split('@').next().filter(|s| !s.is_empty()).unwrap_or(identity);
+            (format!("{name} · {short}"), Some(format!("{name} · {identity}")))
+        }
+    }
+}
+
+/// A group's heading in its section's colour, which folds its calendars away (folded,
+/// it counts them). Accounts end in ⋯ for what can be done with all their calendars;
+/// this computer in + for a new calendar.
+fn group_heading(key: &str, items: &[CalendarInfo], first: bool, folded: bool, section: &str) -> gtk::Widget {
+    let kind = group_kind(items);
+    let (text, tip) = heading_text(kind, items, key);
+    let row = nyx_ui::sidebar::group_label(&text, first);
+    row.add_css_class("calendar-group");
     if folded {
         row.add_css_class("folded");
     }
-    row.set_tooltip_text(tip);
-    icon.add_css_class("nav-heading-icon");
-    row.append(&icon);
-    let label = widgets::label(&text, "nav-heading-label");
-    label.set_hexpand(true);
-    label.set_xalign(0.0);
-    label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    row.append(&label);
-    if folded {
-        let hidden = items.iter().filter(|c| !c.selected).count();
-        let total = if items.len() == 1 { "1 calendar".to_string() } else { format!("{} calendars", items.len()) };
-        let count = widgets::label(&if hidden == 0 { total.clone() } else { format!("{hidden} hidden") }, "nav-count");
-        if hidden > 0 {
-            count.set_tooltip_text(Some(&format!("{hidden} of {total} hidden")));
-        }
-        row.append(&count);
-    }
-    if add {
-        let plus = widgets::icon_button("list-add-symbolic", "Add an account");
-        plus.add_css_class("flat");
-        plus.add_css_class("nav-group-add");
-        plus.connect_clicked(|_| open_online_accounts());
-        row.append(&plus);
-    }
-    let (icon, tip) = if folded { ("pan-end-symbolic", "Show its calendars") } else { ("pan-down-symbolic", "Hide its calendars") };
-    let fold = widgets::icon_button(icon, tip);
-    fold.add_css_class("flat");
+    // Folded, the tooltip counts what's folded away.
+    let hidden = items.iter().filter(|c| !c.selected).count();
+    let total = if items.len() == 1 { "1 calendar".to_string() } else { format!("{} calendars", items.len()) };
+    let count = if hidden == 0 { total } else { format!("{total}, {hidden} hidden") };
+    let tooltip = match (&tip, folded) {
+        (Some(t), true) => Some(format!("{t}\n{count}")),
+        (None, true) => Some(count),
+        (t, false) => t.clone(),
+    };
+    row.set_tooltip_text(tooltip.as_deref());
+    let label = row.first_child().unwrap_or_else(|| row.clone().upcast());
+    let (icon, fold_tip) = if folded { ("pan-end-symbolic", "Show its calendars") } else { ("pan-down-symbolic", "Hide its calendars") };
+    let fold = widgets::icon_button(icon, fold_tip);
     fold.add_css_class("nav-group-add");
     fold.add_css_class("nav-fold");
     let k = key.to_string();
     fold.connect_clicked(move |_| toggle_group_folded(&k));
     row.append(&fold);
+    match kind {
+        GroupKind::Account => {
+            let more = widgets::icon_button("view-more-horizontal-symbolic", "Its calendars…");
+            more.add_css_class("nav-group-add");
+            let (title, list) = (tip.clone().unwrap_or(text.clone()), items.to_vec());
+            more.connect_clicked(move |b| crate::menus::group_card(b.upcast_ref(), b.width() as f64 / 2.0, b.height() as f64, &title, &list));
+            row.append(&more);
+        }
+        GroupKind::Local => {
+            let plus = widgets::icon_button("list-add-symbolic", "New calendar on this computer");
+            plus.add_css_class("nav-group-add");
+            plus.connect_clicked(|_| new_local_calendar());
+            row.append(&plus);
+        }
+        GroupKind::Imported => {}
+    }
     let click = gtk::GestureClick::new();
     let k = key.to_string();
     click.connect_released(move |_, _, _, _| toggle_group_folded(&k));
     label.add_controller(click);
-    crate::menus::attach_group(&row, &text, items);
+    crate::menus::attach_group(&row, &tip.unwrap_or(text), items);
     nyx_ui::sidebar::set_section(&row, section);
     row.upcast()
+}
+
+/// Asks for a name and adds a calendar on this computer.
+fn new_local_calendar() {
+    close_drawer();
+    widgets::ask_text("New calendar", "A calendar kept on this computer. It doesn't sync.", "", "Add", |name| {
+        worker::add_local_calendar(name.clone(), move |r| match r {
+            Ok(()) => toast(&format!("Added the calendar {name}.")),
+            Err(e) => toast(&e),
+        });
+    });
+}
+
+/// Sets as chips: Everything, then each saved set; the one shown now is marked.
+fn sets_chips(calendars: &[CalendarInfo]) -> gtk::FlowBox {
+    let chips = gtk::FlowBox::new();
+    chips.add_css_class("set-chips");
+    chips.set_selection_mode(gtk::SelectionMode::None);
+    chips.set_homogeneous(false);
+    chips.set_halign(gtk::Align::Start);
+    chips.set_max_children_per_line(8);
+    chips.set_row_spacing(6);
+    chips.set_column_spacing(6);
+    let mut shown: Vec<String> = calendars.iter().filter(|c| c.selected).map(|c| c.uid.clone()).collect();
+    shown.sort();
+    let all = calendars.iter().all(|c| c.selected);
+    let chip = |name: &str, tip: &str, active: bool| {
+        let b = gtk::Button::with_label(name);
+        b.add_css_class("chip");
+        b.add_css_class("set-chip");
+        b.set_focus_on_click(false);
+        b.set_halign(gtk::Align::Start);
+        b.set_tooltip_text(Some(tip));
+        if active {
+            b.add_css_class("selected");
+        }
+        b
+    };
+    let everything = chip("Everything", "Show every calendar", all);
+    everything.connect_clicked(|_| show_set(None));
+    chips.insert(&everything, -1);
+    for set in prefs::get().sets {
+        let mut want = set.calendars.clone();
+        want.retain(|u| calendars.iter().any(|c| c.uid == *u));
+        want.sort();
+        let button = chip(&set.name, &format!("Show {}", set.name), !all && want == shown);
+        crate::menus::attach_set(&button, &set);
+        button.connect_clicked(move |_| show_set(Some(&set)));
+        chips.insert(&button, -1);
+    }
+    let mut child = chips.first_child();
+    while let Some(c) = child {
+        c.set_focusable(false);
+        child = c.next_sibling();
+    }
+    chips
 }
 
 /// Loads each account's provider and address for the headings, and redraws
@@ -883,46 +1083,8 @@ fn rebuild_nav() {
     list.append(&mini);
 
     let calendars = ui.borrow().calendars.clone();
-    // Calendar Sets: show a group of calendars together, once there are any.
-    let sets = prefs::get().sets;
-    if !calendars.is_empty() && !sets.is_empty() {
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        row.add_css_class("nav-heading");
-        row.add_css_class("nav-group-row");
-        let icon = gtk::Image::from_icon_name("view-list-symbolic");
-        icon.add_css_class("nav-heading-icon");
-        row.append(&icon);
-        let label = widgets::label("Sets", "nav-heading-label");
-        label.set_hexpand(true);
-        label.set_xalign(0.0);
-        row.append(&label);
-        let plus = widgets::icon_button("list-add-symbolic", "Save the shown calendars as a set");
-        plus.add_css_class("flat");
-        plus.add_css_class("nav-group-add");
-        plus.connect_clicked(|_| save_set());
-        row.append(&plus);
-        nyx_ui::sidebar::set_section(&row, "sets");
-        list.append(&row);
-        let shown: Vec<String> = calendars.iter().filter(|c| c.selected).map(|c| c.uid.clone()).collect();
-        let all = calendars.iter().all(|c| c.selected);
-        for set in sets {
-            let mut want = set.calendars.clone();
-            want.retain(|u| calendars.iter().any(|c| c.uid == *u));
-            want.sort();
-            let mut now = shown.clone();
-            now.sort();
-            let button = nav_button("view-list-symbolic", &set.name, &format!("Show {}", set.name));
-            if !all && want == now {
-                button.add_css_class("active");
-            }
-            crate::menus::attach_set(&button, &set);
-            let set = set.clone();
-            button.connect_clicked(move |_| show_set(Some(&set)));
-            list.append(&button);
-        }
-    }
     let mut groups: Vec<(String, Vec<CalendarInfo>)> = Vec::new();
-    for cal in calendars {
+    for cal in calendars.clone() {
         let label = cal.group_label().to_string();
         match groups.iter_mut().find(|(g, _)| *g == label) {
             Some((_, items)) => items.push(cal),
@@ -930,10 +1092,10 @@ fn rebuild_nav() {
         }
     }
     // Online accounts, then this computer, then the imported copy.
-    groups.sort_by_key(|(_, items)| match () {
-        _ if items.iter().all(is_imported) => 2,
-        _ if items.iter().any(|c| c.account.is_some()) => 0,
-        _ => 1,
+    groups.sort_by_key(|(_, items)| match group_kind(items) {
+        GroupKind::Account => 0,
+        GroupKind::Local => 1,
+        GroupKind::Imported => 2,
     });
     if let Some((key, _)) = groups.iter().find(|(_, items)| items.iter().all(is_imported))
         && !prefs::get().imported_folded_once
@@ -951,13 +1113,20 @@ fn rebuild_nav() {
         let folded = folded_groups.contains(key);
         // The first account in the app's accent, the others through the swatches.
         let section = if i == 0 { nyx_ui::sidebar::ACCENT_SECTION.to_string() } else { nyx_ui::sidebar::rotating_section(i - 1) };
-        list.append(&group_heading(key, items, i == 0, folded, &section));
+        list.append(&group_heading(key, items, false, folded, &section));
         if folded {
             continue;
         }
         for cal in items {
             list.append(&calendar_button(cal));
         }
+    }
+    // Sets: show a group of calendars together.
+    if !calendars.is_empty() {
+        let row = nyx_ui::sidebar::group_label_with_add("Sets", false, "Save the shown calendars as a set", save_set);
+        nyx_ui::sidebar::set_section(&row, "sets");
+        list.append(&row);
+        list.append(&sets_chips(&calendars));
     }
 
     let adjustment = scroll.vadjustment();
@@ -984,21 +1153,31 @@ fn hooks() -> Rc<Hooks> {
     })
 }
 
-/// The header's date navigation (with the range's title), the view switch,
-/// New event, and Refresh (for the sidebar's foot).
-fn toolbar() -> (gtk::Box, gtk::Label, gtk::Box, gtk::Button, gtk::Button) {
+/// The header's parts: Today and the arrows with the range's title, the view switch,
+/// and New event with N's hint.
+struct Toolbar {
+    date_nav: gtk::Box,
+    title: gtk::Label,
+    switcher: gtk::Box,
+    new_button: gtk::Button,
+    new_key: gtk::Label,
+}
+
+fn toolbar() -> Toolbar {
     let bar = gtk::Box::new(gtk::Orientation::Horizontal, 2);
     bar.add_css_class("date-nav");
+    let today = gtk::Button::with_label("Today");
+    today.add_css_class("today-button");
+    today.set_valign(gtk::Align::Center);
+    today.set_tooltip_text(Some("Go to today (T)"));
+    today.connect_clicked(|_| go_to_today());
     let prev = widgets::icon_button("go-previous-symbolic", "Previous (K)");
     prev.connect_clicked(|_| shift(-1));
-    let today = widgets::icon_button("go-home-symbolic", "Today (T)");
-    today.connect_clicked(|_| go_to_today());
     let next = widgets::icon_button("go-next-symbolic", "Next (J)");
     next.connect_clicked(|_| shift(1));
     let title = widgets::label("", "toolbar-title");
-    title.set_margin_start(8);
     title.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    title.set_hexpand(true);
+    title.set_width_chars(4);
     title.set_xalign(0.0);
     let switcher = widgets::segmented(
         &widgets::opts(&[("day", "Day"), ("week", "Week"), ("month", "Month"), ("year", "Year"), ("agenda", "Agenda")]),
@@ -1010,15 +1189,37 @@ fn toolbar() -> (gtk::Box, gtk::Label, gtk::Box, gtk::Button, gtk::Button) {
         },
     );
     switcher.set_tooltip_text(Some("Day (D), Week (W), Month (M), Year (Y), Agenda (A)"));
-    let add = nyx_ui::widgets::bar_button("list-add-symbolic", "New event (N)");
-    add.add_css_class("accent-action");
+    let add = gtk::Button::new();
+    add.add_css_class("suggested-action");
+    add.add_css_class("new-event");
+    add.set_valign(gtk::Align::Center);
+    add.set_tooltip_text(Some("New event (N)"));
+    let content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    content.append(&gtk::Image::from_icon_name("list-add-symbolic"));
+    content.append(&gtk::Label::new(Some("New event")));
+    let key = widgets::label("N", "new-event-key");
+    content.append(&key);
+    add.set_child(Some(&content));
     add.connect_clicked(|_| new_event());
-    let reload = widgets::icon_button("view-refresh-symbolic", "Refresh (R)");
-    reload.connect_clicked(|_| refresh());
-    for w in [prev.upcast_ref::<gtk::Widget>(), today.upcast_ref(), next.upcast_ref(), title.upcast_ref()] {
+    for w in [today.upcast_ref::<gtk::Widget>(), prev.upcast_ref(), next.upcast_ref(), title.upcast_ref()] {
         bar.append(w);
     }
-    (bar, title, switcher, add, reload)
+    Toolbar { date_nav: bar, title, switcher, new_button: add, new_key: key }
+}
+
+/// The first widget under `root` with the style class `class`.
+fn find_class(root: &gtk::Widget, class: &str) -> Option<gtk::Widget> {
+    if root.has_css_class(class) {
+        return Some(root.clone());
+    }
+    let mut child = root.first_child();
+    while let Some(c) = child {
+        if let Some(found) = find_class(&c, class) {
+            return Some(found);
+        }
+        child = c.next_sibling();
+    }
+    None
 }
 
 fn build(app: &gtk::Application) {
@@ -1049,22 +1250,13 @@ fn build(app: &gtk::Application) {
         .vexpand(true)
         .child(&list)
         .build();
-    // The sidebar's top: finding events, and its toggle.
-    let nav_top = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    nav_top.add_css_class("nav-top");
-    let search = gtk::SearchEntry::new();
-    search.set_placeholder_text(Some("Find events  (Ctrl+F)"));
-    search.set_tooltip_text(Some("Enter searches the whole year"));
-    search.update_property(&[gtk::accessible::Property::Label("Find events")]);
-    search.add_css_class("sidebar-search");
-    search.set_hexpand(true);
-    nav_top.append(&search);
-    let collapse = nyx_ui::widgets::bar_button("sidebar-show-symbolic", "Hide the sidebar (Ctrl+B)");
-    collapse.add_css_class("nav-toggle");
-    collapse.connect_clicked(|_| toggle_sidebar());
-    nav_top.append(&collapse);
-    nav.append(&nav_top);
     nav.append(&nav_scroll);
+    // Find: a strip over the calendar, opened from the header's search button.
+    let search = gtk::SearchEntry::new();
+    search.set_placeholder_text(Some("Find events in this view · Enter searches the whole year"));
+    search.update_property(&[gtk::accessible::Property::Label("Find events")]);
+    search.set_visible(false);
+    let search_strip = nyx_ui::chrome::search_strip(&search);
     search.connect_search_changed(|_| {
         if let Some(ui) = ui() {
             ui.borrow_mut().results = None;
@@ -1078,7 +1270,7 @@ fn build(app: &gtk::Application) {
     });
     search.connect_stop_search(|entry| {
         if entry.text().is_empty() {
-            close_drawer();
+            close_search();
         } else {
             entry.set_text("");
         }
@@ -1087,18 +1279,43 @@ fn build(app: &gtk::Application) {
     let banners = gtk::Box::new(gtk::Orientation::Vertical, 8);
     banners.add_css_class("banners");
     banners.set_visible(false);
-    let (date_nav, title, switcher, new_button, reload) = toolbar();
+    let Toolbar { date_nav, title, switcher, new_button, new_key } = toolbar();
+    let quick_field = quick::field();
+    // The window can't get narrower than its header: Quick add gives way first, so a
+    // window being made narrow gets there and swaps in the narrow header.
+    let quick_holder = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::External)
+        .vscrollbar_policy(gtk::PolicyType::Never)
+        .propagate_natural_width(true)
+        .min_content_width(0)
+        .valign(gtk::Align::Center)
+        .child(&quick_field)
+        .build();
+    let find = nyx_ui::widgets::bar_button("system-search-symbolic", "Find events (Ctrl+F)");
+    find.update_property(&[gtk::accessible::Property::Label("Find events")]);
+    {
+        let search = search.clone();
+        find.connect_clicked(move |_| open_search(&search));
+    }
 
-    // The sidebar's foot: what's shown and whether it's current, and Refresh.
-    let nav_foot = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    nav_foot.add_css_class("nav-foot");
+    // The sidebar's foot: whether the calendars are current. Clicking refreshes them.
+    let foot = gtk::Button::new();
+    foot.add_css_class("flat");
+    foot.add_css_class("sync-foot");
+    foot.set_focus_on_click(false);
+    foot.set_tooltip_text(Some("Refresh (R)"));
+    let foot_box = gtk::Box::new(gtk::Orientation::Horizontal, 7);
+    let foot_icon = gtk::Image::from_icon_name("object-select-symbolic");
+    foot_icon.add_css_class("sync-icon");
+    foot_box.append(&foot_icon);
     let readout = widgets::label("", "status-readout");
     readout.set_ellipsize(gtk::pango::EllipsizeMode::End);
     readout.set_hexpand(true);
     STATUS.with(|s| *s.borrow_mut() = Some(readout.clone()));
-    nav_foot.append(&readout);
-    nav_foot.append(&reload);
-    nav.append(&nav_foot);
+    foot_box.append(&readout);
+    foot.set_child(Some(&foot_box));
+    foot.connect_clicked(|_| refresh());
+    nav.append(&foot);
 
     let hooks = hooks();
     let days = DaysView::new(hooks.clone());
@@ -1108,6 +1325,7 @@ fn build(app: &gtk::Application) {
         close_drawer();
         go_to(day);
     });
+    mini.connect_month(refresh_busy);
     let pages = gtk::Stack::new();
     pages.set_transition_type(gtk::StackTransitionType::Crossfade);
     pages.add_named(&days.root, Some("days"));
@@ -1129,10 +1347,12 @@ fn build(app: &gtk::Application) {
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content.add_css_class("settings-content");
     content.set_hexpand(true);
+    content.append(&search_strip);
     content.append(&banners);
     content.append(&pages);
 
-    // The header: the sidebar button, where you are in time, the view, New event and Settings.
+    // The header: the sidebar button and where you are in time, the view, then Quick
+    // add, Find, New event and Settings.
     let header = nyx_ui::chrome::app_header(&window, "x-office-calendar-symbolic", "Calendar");
     let frame = nyx_ui::frame::AppFrame::new(&header.root);
     frame.set_sidebar(&nav);
@@ -1166,17 +1386,29 @@ fn build(app: &gtk::Application) {
         .build();
     body_overlay.add_overlay(&drawer);
 
-    let sidebar_button = nyx_ui::widgets::bar_button("sidebar-show-symbolic", "Show the sidebar (Ctrl+B)");
-    sidebar_button.set_visible(false);
+    let sidebar_button = nyx_ui::widgets::bar_button("sidebar-show-symbolic", "Hide the sidebar (Ctrl+B)");
+    sidebar_button.add_css_class("sidebar-toggle");
     sidebar_button.connect_clicked(|_| toggle_sidebar());
     header.start.append(&sidebar_button);
     header.start.append(&date_nav);
-    header.center.append(&switcher);
+    header.start.append(&switcher);
+    header.end.append(&quick_holder);
+    header.end.append(&find);
     header.end.append(&new_button);
     header.end.append(&nyx_ui::chrome::settings_button(settings_dialog::open));
+    let app_title = find_class(header.root.upcast_ref(), "app-title");
+    if let Some(label) = app_title.as_ref().and_then(|t| t.downcast_ref::<gtk::Label>()) {
+        label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    }
+    let side = |w: &gtk::Box| w.parent().unwrap_or_else(|| w.clone().upcast());
+    let header_sides = (side(&header.start), side(&header.end));
 
     let overlay = frame.install(&window);
     install_keys(&window, &search);
+    glib::timeout_add_seconds_local(60, || {
+        refresh_status();
+        glib::ControlFlow::Continue
+    });
 
     let today = Local::now().date_naive();
     let ui = Ui {
@@ -1187,7 +1419,13 @@ fn build(app: &gtk::Application) {
         nav: nav.clone(),
         nav_list: list,
         nav_scroll: nav_scroll.clone(),
-        nav_toggle: collapse,
+        app_title,
+        header_sides,
+        quick_field,
+        quick_holder,
+        new_key,
+        foot_icon,
+        synced: None,
         account_info: Default::default(),
         frame: frame.root.clone(),
         body,
@@ -1229,16 +1467,37 @@ fn build(app: &gtk::Application) {
             let prev = NARROW.with(|n| n.get());
             let sized = nav.has_css_class("sized");
             if narrow == prev && sized {
+                if let Some(ui) = self::ui()
+                    && let Ok(u) = ui.try_borrow()
+                {
+                    fit_quick_add(&u);
+                }
                 return;
             }
             nav.add_css_class("sized");
             NARROW.with(|n| n.set(narrow));
+            if narrow {
+                window.add_css_class("narrow");
+            } else {
+                window.remove_css_class("narrow");
+            }
             apply_sidebar();
-            if let Some(ui) = self::ui()
-                && let Ok(u) = ui.try_borrow()
-                && u.results.is_none()
-            {
-                set_view_title(&u);
+            let Some(ui) = self::ui() else { return };
+            let (view, anchor, searching) = {
+                let Ok(u) = ui.try_borrow() else { return };
+                if let Some(title) = &u.app_title {
+                    title.set_visible(!narrow);
+                }
+                u.new_key.set_visible(!narrow);
+                if u.results.is_none() {
+                    set_view_title(&u);
+                }
+                fit_quick_add(&u);
+                (u.view, u.anchor, u.results.is_some())
+            };
+            // A narrow week is five days.
+            if view == ViewKind::Week && narrow != prev && !searching {
+                go_to(anchor);
             }
         }
     };
@@ -1290,8 +1549,11 @@ fn apply_sidebar() {
     u.drawer.set_can_target(open);
     u.scrim.set_reveal_child(open);
     u.scrim.set_can_target(open);
-    u.sidebar_button.set_visible(narrow || collapsed);
-    u.nav_toggle.set_tooltip_text(Some(if narrow { "Close the sidebar (Esc)" } else { "Hide the sidebar (Ctrl+B)" }));
+    u.sidebar_button.set_tooltip_text(Some(match (narrow, open, collapsed) {
+        (true, true, _) => "Close the sidebar (Esc)",
+        (true, false, _) | (false, _, true) => "Show the sidebar (Ctrl+B)",
+        (false, _, false) => "Hide the sidebar (Ctrl+B)",
+    }));
 }
 
 /// Ctrl+B and the sidebar buttons: the drawer on narrow windows, else the saved choice.
@@ -1327,13 +1589,7 @@ fn install_keys(window: &gtk::ApplicationWindow, search: &gtk::SearchEntry) {
     let keys = gtk::EventControllerKey::new();
     let search = search.clone();
     let win = window.clone();
-    let find = move |search: &gtk::SearchEntry| {
-        open_drawer();
-        let search = search.clone();
-        glib::idle_add_local_once(move || {
-            search.grab_focus();
-        });
-    };
+    let find = open_search;
     keys.connect_key_pressed(move |_, key, _, mods| {
         let ctrl = mods.contains(gdk::ModifierType::CONTROL_MASK);
         if ctrl {
@@ -1350,6 +1606,10 @@ fn install_keys(window: &gtk::ApplicationWindow, search: &gtk::SearchEntry) {
             close_drawer();
             return glib::Propagation::Stop;
         }
+        if key == gdk::Key::Escape && search.is_visible() {
+            close_search();
+            return glib::Propagation::Stop;
+        }
         if typing(win.upcast_ref()) {
             return glib::Propagation::Proceed;
         }
@@ -1363,17 +1623,37 @@ fn install_keys(window: &gtk::ApplicationWindow, search: &gtk::SearchEntry) {
             gdk::Key::a => set_view(ViewKind::Agenda),
             gdk::Key::y => set_view(ViewKind::Year),
             gdk::Key::n => new_event(),
+            gdk::Key::q => quick_add(),
             gdk::Key::r => refresh(),
             gdk::Key::slash => find(&search),
-            gdk::Key::Escape if !search.text().is_empty() => {
-                search.set_text("");
-            }
             gdk::Key::F1 => show_shortcuts(),
             _ => return glib::Propagation::Proceed,
         }
         glib::Propagation::Stop
     });
     window.add_controller(keys);
+}
+
+/// Shows the search strip over the calendar and puts the cursor in it.
+fn open_search(search: &gtk::SearchEntry) {
+    close_drawer();
+    search.set_visible(true);
+    let search = search.clone();
+    glib::idle_add_local_once(move || {
+        search.grab_focus();
+    });
+}
+
+/// Clears the search and puts the strip away.
+fn close_search() {
+    let Some(ui) = ui() else { return };
+    let search = ui.borrow().search.clone();
+    search.set_text("");
+    search.set_visible(false);
+    if ui.borrow().results.is_some() {
+        ui.borrow_mut().results = None;
+        show_view();
+    }
 }
 
 pub fn show_shortcuts() {
@@ -1565,11 +1845,21 @@ mod tests {
 
     #[test]
     fn short_titles() {
-        let week = |from: NaiveDate| (from, from + Duration::days(7));
-        assert_eq!(short_title(ViewKind::Week, d(2026, 10, 14), week(d(2026, 10, 11))), "Oct 2026");
-        assert_eq!(short_title(ViewKind::Week, d(2026, 10, 28), week(d(2026, 10, 26))), "Oct – Nov");
-        assert_eq!(short_title(ViewKind::Week, d(2026, 12, 30), week(d(2026, 12, 27))), "Dec – Jan");
+        let five = |from: NaiveDate| (from, from + Duration::days(5));
+        assert_eq!(short_title(ViewKind::Week, d(2026, 11, 12), five(d(2026, 11, 9))), "Nov 9 – 13");
+        assert_eq!(short_title(ViewKind::Week, d(2026, 10, 28), five(d(2026, 10, 29))), "Oct 29 – Nov 2");
         assert_eq!(short_title(ViewKind::Day, d(2026, 10, 24), (d(2026, 10, 24), d(2026, 10, 25))), "Sat, Oct 24");
         assert_eq!(short_title(ViewKind::Month, d(2026, 9, 1), (d(2026, 8, 30), d(2026, 10, 11))), "Sep 2026");
+        assert_eq!(short_title(ViewKind::Agenda, d(2026, 10, 28), (d(2026, 10, 28), d(2026, 11, 27))), "Oct – Nov");
+    }
+
+    #[test]
+    fn narrow_weeks_are_five_days_with_the_day_asked_for() {
+        // Thursday: that week's Monday to Friday.
+        assert_eq!(five_days(d(2026, 11, 12)), (d(2026, 11, 9), d(2026, 11, 14)));
+        assert_eq!(five_days(d(2026, 11, 9)), (d(2026, 11, 9), d(2026, 11, 14)));
+        // A weekend day starts the five.
+        assert_eq!(five_days(d(2026, 11, 14)), (d(2026, 11, 14), d(2026, 11, 19)));
+        assert_eq!(five_days(d(2026, 11, 15)), (d(2026, 11, 15), d(2026, 11, 20)));
     }
 }

@@ -63,20 +63,130 @@ fn describe(plan: &Plan) -> String {
 /// Opens quick create pointing at `rect` on `parent`. `slot` is where the user
 /// double-clicked, if they did.
 pub fn show(parent: &gtk::Widget, rect: gtk::gdk::Rectangle, slot: Option<Slot>) {
-    let writable: Vec<(String, String)> =
-        window::calendars().into_iter().filter(|c| !c.read_only).map(|c| (c.uid, c.name)).collect();
-    if writable.is_empty() {
-        window::toast("There's no calendar to add events to. Add an account in Settings → Online Accounts.");
-        return;
-    }
     let popover = gtk::Popover::new();
-    let card = widgets::vbox(8);
-    card.add_css_class("quick-create");
     let entry = gtk::Entry::new();
     entry.set_placeholder_text(Some("Lunch with Sam tomorrow at 1"));
     entry.update_property(&[gtk::accessible::Property::Label("Quick add: what and when")]);
     entry.set_width_chars(34);
-    card.append(&entry);
+    let p = popover.clone();
+    let Some(quick) = card(&entry, slot, Rc::new(move || p.popdown())) else { return };
+    quick.root.prepend(&entry);
+    popover.set_child(Some(&quick.root));
+    popover.set_parent(parent);
+    popover.set_pointing_to(Some(&rect));
+    popover.connect_closed(|p| {
+        let p = p.clone();
+        glib::idle_add_local_once(move || p.unparent());
+    });
+    popover.popup();
+    entry.grab_focus();
+}
+
+/// The header's Quick add field. What it reads drops down under it while you type;
+/// Enter adds the event, Esc clears it.
+pub fn field() -> gtk::Entry {
+    let entry = gtk::Entry::new();
+    entry.add_css_class("quick-add");
+    entry.set_placeholder_text(Some("Add “Lunch with Sam at 1”"));
+    entry.set_primary_icon_name(Some("list-add-symbolic"));
+    entry.set_tooltip_text(Some("Quick add (Q): what and when, then Enter"));
+    entry.update_property(&[gtk::accessible::Property::Label("Quick add: what and when")]);
+    entry.set_width_chars(16);
+    entry.set_valign(gtk::Align::Center);
+    let open: Rc<RefCell<Option<gtk::Popover>>> = Rc::default();
+    let drop_down = {
+        let open = open.clone();
+        move |entry: &gtk::Entry| {
+            if entry.text().trim().is_empty() {
+                if let Some(p) = open.borrow().clone() {
+                    p.popdown();
+                }
+                return;
+            }
+            if open.borrow().is_some() {
+                return;
+            }
+            let popover = gtk::Popover::new();
+            popover.add_css_class("quick-drop");
+            popover.set_autohide(false);
+            popover.set_has_arrow(false);
+            popover.set_position(gtk::PositionType::Bottom);
+            popover.set_halign(gtk::Align::Start);
+            popover.set_parent(entry);
+            let (p, e) = (popover.clone(), entry.clone());
+            let done = Rc::new(move || {
+                p.popdown();
+                e.set_text("");
+            });
+            let Some(quick) = card(entry, None, done) else {
+                popover.unparent();
+                entry.set_text("");
+                return;
+            };
+            popover.set_child(Some(&quick.root));
+            let (o, e, handlers) = (open.clone(), entry.clone(), RefCell::new(quick.handlers));
+            popover.connect_closed(move |p| {
+                o.borrow_mut().take();
+                for id in handlers.borrow_mut().drain(..) {
+                    e.disconnect(id);
+                }
+                let p = p.clone();
+                glib::idle_add_local_once(move || p.unparent());
+            });
+            *open.borrow_mut() = Some(popover.clone());
+            popover.popup();
+        }
+    };
+    let d = drop_down.clone();
+    entry.connect_changed(move |e| d(e));
+    // Leaving for somewhere outside the card puts it away; coming back brings it again.
+    let focus = gtk::EventControllerFocus::new();
+    let (o, e) = (open.clone(), entry.clone());
+    focus.connect_leave(move |_| {
+        let (o, e) = (o.clone(), e.clone());
+        glib::idle_add_local_once(move || {
+            let Some(p) = o.borrow().clone() else { return };
+            let inside = e.root().and_then(|r| gtk::prelude::GtkWindowExt::focus(r.downcast_ref::<gtk::Window>()?)).is_some_and(|f| {
+                f.is_ancestor(&p) || f.is_ancestor(&e) || f == *e.upcast_ref::<gtk::Widget>()
+            });
+            if !inside {
+                p.popdown();
+            }
+        });
+    });
+    let e = entry.clone();
+    focus.connect_enter(move |_| drop_down(&e));
+    entry.add_controller(focus);
+    let keys = gtk::EventControllerKey::new();
+    let e = entry.clone();
+    keys.connect_key_pressed(move |_, key, _, _| {
+        if key == gtk::gdk::Key::Escape && !e.text().is_empty() {
+            e.set_text("");
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
+    });
+    entry.add_controller(keys);
+    entry
+}
+
+/// What goes under quick add's entry: how the text reads, other readings, the
+/// calendar, More options and Add. `done` puts it away once it has added or handed
+/// over to the editor. `handlers` are its hooks on the entry.
+struct Card {
+    root: gtk::Box,
+    handlers: Vec<glib::SignalHandlerId>,
+}
+
+fn card(entry: &gtk::Entry, slot: Option<Slot>, done: Rc<dyn Fn()>) -> Option<Card> {
+    let writable: Vec<(String, String)> =
+        window::calendars().into_iter().filter(|c| !c.read_only).map(|c| (c.uid, c.name)).collect();
+    if writable.is_empty() {
+        window::toast("There's no calendar to add events to. Add an account in Settings → Online Accounts.");
+        return None;
+    }
+    let card = widgets::vbox(8);
+    card.add_css_class("quick-create");
     let preview = widgets::label("", "dim");
     preview.set_xalign(0.0);
     preview.set_wrap(true);
@@ -146,11 +256,11 @@ pub fn show(parent: &gtk::Widget, rect: gtk::gdk::Rectangle, slot: Option<Slot>)
         }
     };
     let r = reparse.clone();
-    entry.connect_changed(move |e| r(&e.text()));
-    reparse("");
+    let changed = entry.connect_changed(move |e| r(&e.text()));
+    reparse(&entry.text());
 
     let save = {
-        let (popover, chosen, calendar, entry) = (popover.clone(), chosen.clone(), calendar.clone(), entry.clone());
+        let (done, chosen, calendar, entry) = (done.clone(), chosen.clone(), calendar.clone(), entry.clone());
         move || {
             if entry.text().trim().is_empty() {
                 return;
@@ -169,8 +279,8 @@ pub fn show(parent: &gtk::Widget, rect: gtk::gdk::Rectangle, slot: Option<Slot>)
                 ..Draft::default()
             };
             window::remember_calendar(&uid);
-            popover.popdown();
             let title = plan.title.clone();
+            done();
             actions::create(uid, draft, move |result| match result {
                 Ok(_) => window::toast(&format!("Added “{title}”.")),
                 Err(err) => window::toast(&err),
@@ -178,32 +288,23 @@ pub fn show(parent: &gtk::Widget, rect: gtk::gdk::Rectangle, slot: Option<Slot>)
         }
     };
     let s = save.clone();
-    entry.connect_activate(move |_| s());
+    let activate = entry.connect_activate(move |_| s());
     add.connect_clicked(move |_| save());
     {
-        let (popover, chosen, entry) = (popover.clone(), chosen.clone(), entry.clone());
+        let (chosen, entry) = (chosen.clone(), entry.clone());
         more.connect_clicked(move |_| {
             let plan = chosen.borrow().clone();
-            popover.popdown();
             let start = match plan {
                 Some(p) if !entry.text().trim().is_empty() => {
                     editor::Start { title: p.title, span: Some(p.span), repeat: p.repeat, calendar: None }
                 }
                 _ => slot.map(editor::start_at).unwrap_or_default(),
             };
+            done();
             editor::open(None, Some(start));
         });
     }
-
-    popover.set_child(Some(&card));
-    popover.set_parent(parent);
-    popover.set_pointing_to(Some(&rect));
-    popover.connect_closed(|p| {
-        let p = p.clone();
-        glib::idle_add_local_once(move || p.unparent());
-    });
-    popover.popup();
-    entry.grab_focus();
+    Some(Card { root: card, handlers: vec![changed, activate] })
 }
 
 #[cfg(test)]

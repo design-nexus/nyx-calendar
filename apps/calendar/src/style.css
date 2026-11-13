@@ -19,60 +19,131 @@
   border-bottom: 1px solid @hairline;
 }
 
+/* Calendars: a tick box in the calendar's colour; hidden ones read quieter. */
 .settings-navigation button.calendar-item.hidden-calendar .nav-label {
-  color: @theme_text_tertiary;
+  color: @theme_dim_text;
 }
 
 window.calendar-window .settings-navigation button.calendar-item {
-  min-height: 32px;
-  padding: 0 10px 0 12px;
+  min-height: 26px;
+  padding: 0 8px;
 }
 
-/* Sidebar headings: an account's logo and address, the fold arrow on hover. */
-/* The line under the heading takes the group's section colour. */
-.settings-navigation .nav-heading {
-  margin: 14px 0 4px;
-  padding: 0 0 2px 6px;
-  min-height: 24px;
-  border-spacing: 6px;
-  border-bottom: 1px solid transparent;
-}
-
-window.calendar-window .settings-navigation .nav-heading button.nav-group-add {
-  margin: 0;
-  min-width: 20px;
-  color: @theme_dim_text;
-}
-
-window.calendar-window .settings-navigation .nav-heading button.nav-group-add:hover {
+window.calendar-window .settings-navigation button.calendar-item .nav-label {
   color: @theme_text;
 }
 
-.settings-navigation .nav-heading-label {
-  font-size: 12.5px;
-  font-weight: 600;
-  color: @theme_dim_text;
+window.calendar-window .settings-navigation button.calendar-item image {
+  -gtk-icon-size: 13px;
+  color: @theme_text_tertiary;
 }
 
-.settings-navigation .nav-heading-icon {
-  -gtk-icon-size: 14px;
+/* Group headings (accounts, this computer, imported, Sets): the line in the section's
+   colour runs under the whole row, its buttons too. */
+window.calendar-window .settings-navigation .nav-group-row {
+  margin: 14px 2px 4px;
+  border-bottom: 1px solid transparent;
+}
+
+window.calendar-window .settings-navigation .nav-group-row .nav-group {
+  margin: 0;
+  padding: 2px 2px 5px;
+  border-bottom-width: 0;
+  letter-spacing: 0.03em;
+}
+
+window.calendar-window .settings-navigation .nav-group-row button.nav-group-add {
+  min-width: 22px;
+  min-height: 22px;
+  margin: 0 0 3px;
+  padding: 0;
   color: @theme_text_tertiary;
+}
+
+window.calendar-window .settings-navigation .nav-group-row button.nav-group-add:hover {
+  color: @theme_text;
+}
+
+window.calendar-window .settings-navigation .nav-group-row button.nav-group-add image {
+  -gtk-icon-size: 14px;
 }
 
 .settings-navigation .nav-count {
   font-size: 11px;
   color: @theme_text_tertiary;
+  margin: 0 4px 3px 0;
 }
 
-.settings-navigation .nav-heading button.nav-fold {
+.settings-navigation .nav-group-row button.nav-fold {
   opacity: 0;
   transition: opacity 120ms ease-out;
 }
 
-.settings-navigation .nav-heading:hover button.nav-fold,
-.settings-navigation .nav-heading.folded button.nav-fold,
-.settings-navigation .nav-heading button.nav-fold:focus-visible {
+.settings-navigation .nav-group-row:hover button.nav-fold,
+.settings-navigation .nav-group-row.folded button.nav-fold,
+.settings-navigation .nav-group-row button.nav-fold:focus-visible {
   opacity: 1;
+}
+
+/* Sets as chips; the one shown now in the accent. */
+.settings-navigation .set-chips {
+  margin: 4px 4px 2px;
+}
+
+.settings-navigation .set-chips flowboxchild {
+  padding: 0;
+}
+
+window.calendar-window .settings-navigation button.set-chip {
+  min-height: 24px;
+  padding: 0 10px;
+  border-radius: 7px;
+  background: @field;
+  box-shadow: inset 0 0 0 1px alpha(@theme_text, 0.08);
+  color: @theme_dim_text;
+  font-size: 0.92em;
+  font-weight: 500;
+}
+
+window.calendar-window .settings-navigation button.set-chip:hover {
+  background: @row_hover;
+  color: @theme_text;
+}
+
+window.calendar-window .settings-navigation button.set-chip.selected {
+  background: alpha(@theme_accent, 0.16);
+  box-shadow: inset 0 0 0 1px alpha(@theme_accent, 0.45);
+  color: @theme_text;
+}
+
+/* The foot: whether the calendars are current. */
+window.calendar-window .settings-navigation button.sync-foot {
+  min-height: 28px;
+  margin: 6px 0 0;
+  padding: 0 8px;
+  background: transparent;
+}
+
+window.calendar-window .settings-navigation button.sync-foot:hover {
+  background: @row_hover;
+}
+
+.sync-foot .status-readout {
+  font-size: 0.846em;
+  color: @theme_text_tertiary;
+}
+
+.sync-foot .sync-icon {
+  -gtk-icon-size: 13px;
+  color: @theme_text_tertiary;
+}
+
+.sync-foot .sync-icon.ok {
+  color: @theme_success;
+}
+
+.sync-foot .sync-icon.warning {
+  color: @theme_warning;
 }
 
 /* The sidebar's right-click cards. */
@@ -135,30 +206,90 @@ window.calendar-window .settings-navigation .nav-heading button.nav-group-add:ho
   background: alpha(@theme_danger, 0.12);
 }
 
-.settings-navigation .nav-group-add {
-  min-height: 22px;
-  min-width: 22px;
-  padding: 0;
-  margin-right: 4px;
-}
-
 .week-header {
   border-bottom: 1px solid @hairline;
 }
 
+/* The event popover: the head, your answer, the call, then what and who. */
+window.calendar-window popover.event-popover > contents {
+  padding: 14px;
+}
+
 .event-details {
-  padding: 8px 10px;
-  min-width: 220px;
+  min-width: 324px;
 }
 
 .event-title {
   font-weight: 600;
-  font-size: 1.05em;
+  font-size: 1.154em;
+}
+
+.event-when {
+  color: @theme_dim_text;
+  font-size: 0.923em;
+}
+
+window.calendar-window .event-details button.icon-button {
+  min-width: 26px;
+  min-height: 26px;
+  padding: 0;
+}
+
+.invite-box {
+  padding: 10px;
+  border-radius: var(--nyx-radius-card);
+  background: mix(@theme_card, @theme_accent, 0.09);
+}
+
+.invite-who {
+  color: @theme_dim_text;
+  font-size: 0.923em;
+}
+
+window.calendar-window .invite-box .segmented button.segment {
+  min-height: 28px;
+}
+
+window.calendar-window button.join-call {
+  min-height: 32px;
+}
+
+.detail-icon {
+  color: @theme_dim_text;
+  -gtk-icon-size: 15px;
+  margin-top: 1px;
+}
+
+window.calendar-window .event-details button.link-button {
+  min-height: 0;
+  padding: 0 2px;
+  background: transparent;
+  color: @theme_accent;
+  font-size: 0.923em;
+  font-weight: 500;
+}
+
+window.calendar-window .event-details button.link-button:hover {
+  text-decoration: underline;
+}
+
+.faces {
+  margin-left: 25px;
+}
+
+.faces .face {
+  margin-right: -4px;
+}
+
+.faces .faces-more {
+  margin-left: 10px;
+  color: @theme_text_tertiary;
+  font-size: 0.846em;
 }
 
 /* Sidebar month */
 .mini-calendar {
-  padding: 6px 4px 10px 4px;
+  padding: 2px 2px 4px;
 }
 
 .mini-title {
@@ -166,10 +297,14 @@ window.calendar-window .settings-navigation .nav-heading button.nav-group-add:ho
   padding-left: 8px;
 }
 
-.mini-nav {
-  min-height: 26px;
-  min-width: 26px;
+window.calendar-window button.mini-nav {
+  min-height: 24px;
+  min-width: 24px;
   padding: 0;
+}
+
+window.calendar-window button.mini-nav image {
+  -gtk-icon-size: 14px;
 }
 
 /* Agenda */
@@ -252,7 +387,14 @@ button.chip {
 
 .event-notes {
   color: @theme_dim_text;
-  font-size: 0.92em;
+  font-size: 0.923em;
+  padding: 8px 10px;
+  border-radius: var(--nyx-radius-small);
+  background: @field;
+}
+
+window.calendar-window popover.quick-drop > contents {
+  padding: 10px;
 }
 
 .event-editor .editor-title {
@@ -309,25 +451,91 @@ button.destructive {
   padding-left: 32px;
 }
 
-/* Nyx 2.0: the date navigation, the view switch and New event live in the
-   header; the sidebar has Find on top and the status at its foot. */
+/* The header: Today and the arrows with the range, the view switch, then Quick add,
+   Find and New event. */
 .app-header .date-nav .toolbar-title {
   font-weight: 600;
-  font-size: 13.5px;
-  margin-left: 6px;
+  font-size: 1.077em;
+  margin-left: 8px;
   margin-right: 12px;
 }
 
-window.calendar-window .app-header button.accent-action {
+window.calendar-window .app-header button.today-button {
+  min-height: 28px;
+  margin: 0 4px 0 4px;
+  padding: 0 10px;
+  font-weight: 500;
+}
+
+window.calendar-window .app-header entry.quick-add {
+  min-height: 32px;
+  min-width: 200px;
+  margin: 7px 6px 7px 0;
+  padding: 0 10px;
+  border-radius: 8px;
+  background: @field;
+  border-color: transparent;
+}
+
+window.calendar-window .app-header entry.quick-add:focus-within {
+  background: alpha(@theme_text, 0.07);
+}
+
+window.calendar-window .app-header entry.quick-add > image {
   color: @theme_accent;
 }
 
-window.calendar-window .app-header button.accent-action:hover {
-  background: alpha(@theme_accent, 0.14);
+window.calendar-window .app-header button.new-event {
+  min-height: 30px;
+  margin: 0 4px 0 6px;
+  padding: 0 10px 0 8px;
 }
 
-.nav-top {
-  padding: 0 0 6px 0;
+.app-header .new-event-key {
+  margin-left: 2px;
+  font-size: 0.846em;
+  font-weight: 600;
+  color: alpha(@theme_on_accent, 0.7);
+}
+
+window.calendar-window .app-header .segmented button.segment {
+  padding: 0 10px;
+}
+
+/* Narrow windows: the same header, closer together, so 800 px holds it. */
+window.calendar-window.narrow .app-header {
+  padding: 0 4px 0 10px;
+}
+
+window.calendar-window.narrow .app-header .segmented button.segment {
+  padding: 0 5px;
+}
+
+window.calendar-window.narrow .app-header .date-nav .toolbar-title {
+  font-size: 1em;
+  margin-left: 4px;
+  margin-right: 6px;
+}
+
+window.calendar-window.narrow .app-header button.today-button {
+  padding: 0 8px;
+  margin: 0 2px;
+}
+
+window.calendar-window.narrow .app-header button.icon-button,
+window.calendar-window.narrow .app-header button.bar-button {
+  min-width: 30px;
+  padding: 0;
+}
+
+window.calendar-window.narrow .app-header button.new-event {
+  margin-left: 2px;
+  margin-right: 0;
+  padding: 0 8px 0 6px;
+}
+
+.search-strip {
+  padding: 0 0 8px;
 }
 
 /* Narrow windows: the sidebar slides over the calendar, which dims behind it. */
@@ -339,13 +547,4 @@ window.calendar-window .app-header button.accent-action:hover {
   min-width: 260px;
   background: @theme_panel;
   border-right: 1px solid @hairline;
-}
-
-.nav-foot {
-  padding: 6px 4px 0 8px;
-}
-
-.nav-foot .status-readout {
-  color: @theme_dim_text;
-  font-size: 11.5px;
 }

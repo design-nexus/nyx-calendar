@@ -58,7 +58,7 @@ pub fn extended() -> Result<(), String> {
             return Err("Provider recurrence lost its DST wall-clock time".into());
         }
         println!("Google Calendar: recurring event and reminder preserve 09:00 across DST");
-        cal.free_busy(start, start + 4 * 86400, &[account.identity.clone()]).map_err(|e| e.to_string())?;
+        cal.free_busy(start, start + 4 * 86400, std::slice::from_ref(&account.identity)).map_err(|e| e.to_string())?;
         println!("Google Calendar: provider free/busy request passed");
         Ok(())
     })();

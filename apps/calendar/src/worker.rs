@@ -226,6 +226,37 @@ pub fn set_color(uid: String, color: String, reply: impl FnOnce(Result<(), Strin
     );
 }
 
+/// Adds a calendar kept on this computer, shown.
+pub fn add_local_calendar(name: String, reply: impl FnOnce(Result<(), String>) + 'static) {
+    ask(
+        move || {
+            let r = STATE.with(|s| {
+                s.borrow().registry.as_ref().map(|r| {
+                    r.add_source(&nyx_eds::Source {
+                        uid: format!("local:{}", glib::uuid_string_random()),
+                        name,
+                        kind: Kind::Calendar,
+                        color: None,
+                        selected: true,
+                        backend: "native".into(),
+                        account: None,
+                        group: None,
+                        local: true,
+                        writable: true,
+                    })
+                })
+            });
+            schedule_sources();
+            match r {
+                Some(Ok(())) => Ok(()),
+                Some(Err(e)) => Err(e.to_string()),
+                None => Err("Calendar data isn't available.".into()),
+            }
+        },
+        reply,
+    );
+}
+
 /// The online accounts (Settings → Accounts).
 pub fn accounts(reply: impl FnOnce(Vec<nyx_accounts::Account>) + 'static) {
     ask(|| STATE.with(|s| s.borrow().accounts.as_ref().and_then(|c| c.list().ok()).unwrap_or_default()), reply);
@@ -307,14 +338,13 @@ fn send_identities() {
     let mut me: Vec<String> = Vec::new();
     STATE.with(|s| {
         let s = s.borrow();
-        let Some(client) = &s.accounts else { return };
-        for account in client.list().unwrap_or_default() {
-            for candidate in [account.identity.clone(), account.identity.clone()] {
-                if candidate.contains('@') && !me.iter().any(|m| m.eq_ignore_ascii_case(&candidate)) {
-                    me.push(candidate);
-                }
+        let accounts = s.accounts.as_ref().and_then(|c| c.list().ok()).unwrap_or_default();
+        // An online account's calendars are grouped under its address.
+        let groups = s.sent.iter().filter(|c| c.account.is_some()).filter_map(|c| c.group.clone());
+        for candidate in accounts.into_iter().map(|a| a.identity).chain(groups) {
+            if candidate.contains('@') && !me.iter().any(|m| m.eq_ignore_ascii_case(&candidate)) {
+                me.push(candidate);
             }
-
         }
     });
     send(Update::Identities(me));
@@ -386,6 +416,7 @@ fn calendar_list(state: &State) -> Vec<CalendarInfo> {
                 selected: s.selected,
                 group: s.group,
                 account: s.account,
+                provider: s.backend,
             }
         })
         .collect()

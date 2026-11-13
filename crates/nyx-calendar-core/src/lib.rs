@@ -29,6 +29,8 @@ pub struct CalendarInfo {
     pub group: Option<String>,
     /// The GNOME Online Accounts id, if it belongs to an online account.
     pub account: Option<String>,
+    /// What syncs it: `google`, `caldav`, `native` (this computer)…
+    pub provider: String,
     /// Its account needs the user to sign in again.
     pub needs_sign_in: bool,
     /// The backend can't reach its server; events come from the saved copy.

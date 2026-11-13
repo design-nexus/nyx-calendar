@@ -1,6 +1,5 @@
 //! Calendar — your online and local calendars, for Omarchy.
 
-mod account_logo;
 mod actions;
 mod agenda;
 mod control;

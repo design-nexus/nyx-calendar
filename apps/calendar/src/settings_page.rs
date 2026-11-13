@@ -305,7 +305,7 @@ fn fill_accounts(list: &gtk::Box) {
     });
 }
 
-fn provider_name(provider: &str) -> &str {
+pub(crate) fn provider_name(provider: &str) -> &str {
     match provider {
         "google" => "Google",
         "microsoft_personal" => "Microsoft personal",

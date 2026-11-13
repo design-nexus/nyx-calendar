@@ -41,6 +41,8 @@ pub struct Colors {
     pub bg: Rgb,
     pub text: Rgb,
     pub dim: Rgb,
+    /// Hints and labels, quieter than `dim`.
+    pub tertiary: Rgb,
     pub accent: Rgb,
     pub on_accent: Rgb,
 }
@@ -52,6 +54,7 @@ pub fn colors() -> Colors {
         bg,
         text: Rgb::hex(&p.text),
         dim: Rgb::hex(&p.dim_text),
+        tertiary: Rgb::hex(&nyx_theme::look().text_tertiary),
         accent: Rgb::hex(&p.accent),
         on_accent: if p.light { Rgb(1.0, 1.0, 1.0) } else { bg },
     }
@@ -162,9 +165,88 @@ pub fn event_block(cr: &gtk::cairo::Context, c: &Colors, color: Rgb, cancelled: 
     (title, title.mix(c.bg, 0.18))
 }
 
+/// A timed event in the day and week grid: the calendar's colour at a fifth over the
+/// background with a 3 px stripe of it down the left; the open event solid. Past events
+/// fade toward the background. Returns the colours for its title and its details.
+#[allow(clippy::too_many_arguments)]
+pub fn timed_block(cr: &gtk::cairo::Context, c: &Colors, color: Rgb, event: &Event, past: bool, x: f64, y: f64, w: f64, h: f64) -> (Rgb, Rgb) {
+    const R: f64 = 7.0;
+    if is_selected(event) {
+        set(cr, color);
+        rounded(cr, x, y, w, h, R);
+        let _ = cr.fill();
+        let white = Rgb(1.0, 1.0, 1.0);
+        return (white, white.mix(color, 0.15));
+    }
+    let fade = |rgb: Rgb| if past { rgb.mix(c.bg, 0.38) } else { rgb };
+    set(cr, fade(c.bg.mix(color, if event.cancelled { 0.08 } else { 0.20 })));
+    rounded(cr, x, y, w, h, R);
+    let _ = cr.fill();
+    cr.save().ok();
+    rounded(cr, x, y, w, h, R);
+    cr.clip();
+    set(cr, fade(if event.cancelled { color.mix(c.bg, 0.5) } else { color }));
+    cr.rectangle(x, y, 3.0, h);
+    let _ = cr.fill();
+    cr.restore().ok();
+    let title = if event.cancelled { c.dim } else { c.text.mix(color, 0.30) };
+    (fade(title), fade(c.dim))
+}
+
+/// An all-day bar: the calendar's colour at a fifth, its text toward the colour. A
+/// reminder from the overlay is an outline instead, with a box before its title.
+/// Returns the text colour and where the text starts.
+#[allow(clippy::too_many_arguments)]
+pub fn all_day_bar(cr: &gtk::cairo::Context, c: &Colors, color: Rgb, event: &Event, x: f64, y: f64, w: f64, h: f64) -> (Rgb, f64) {
+    const R: f64 = 6.0;
+    let text = if event.cancelled { c.dim } else { color.mix(c.text, 0.25) };
+    if is_selected(event) {
+        set(cr, color);
+        rounded(cr, x, y, w, h, R);
+        let _ = cr.fill();
+        return (Rgb(1.0, 1.0, 1.0), x + 8.0);
+    }
+    if event.calendar.starts_with("task:") {
+        set_a(cr, color, 0.45);
+        cr.set_line_width(1.0);
+        rounded(cr, x + 0.5, y + 0.5, w - 1.0, h - 1.0, R - 0.5);
+        let _ = cr.stroke();
+        set(cr, color);
+        cr.set_line_width(1.5);
+        rounded(cr, x + 8.75, y + (h - 10.0) / 2.0 + 0.75, 8.5, 8.5, 2.5);
+        let _ = cr.stroke();
+        return (text, x + 24.0);
+    }
+    set(cr, c.bg.mix(color, if event.cancelled { 0.08 } else { 0.20 }));
+    rounded(cr, x, y, w, h, R);
+    let _ = cr.fill();
+    (text, x + 8.0)
+}
+
+/// One occurrence: its calendar, uid, recurrence id and when.
+type Occurrence = (String, String, Option<String>, Span);
+
+thread_local! {
+    /// The event whose popover is open.
+    static SELECTED: std::cell::RefCell<Option<Occurrence>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Marks `event` as the one open in a popover (`None` when it closes).
+pub fn select(event: Option<&Event>) {
+    SELECTED.with(|s| *s.borrow_mut() = event.map(|e| (e.calendar.clone(), e.uid.clone(), e.rid.clone(), e.span)));
+}
+
+pub fn is_selected(event: &Event) -> bool {
+    SELECTED.with(|s| {
+        s.borrow().as_ref().is_some_and(|(cal, uid, rid, span)| {
+            *cal == event.calendar && *uid == event.uid && *rid == event.rid && *span == event.span
+        })
+    })
+}
+
 /// The grid's lines: the text colour, barely there.
 pub fn grid_line(cr: &gtk::cairo::Context, c: &Colors) {
-    set_a(cr, c.text, 0.04);
+    set_a(cr, c.text, 0.07);
     cr.set_line_width(1.0);
 }
 
@@ -204,6 +286,32 @@ pub fn time_range(start: NaiveDateTime, end: NaiveDateTime) -> String {
         return time_text(start.time());
     }
     format!("{} – {}", time_text(start.time()), time_text(end.time()))
+}
+
+/// A time without its AM or PM: "9", "1:30"; 24-hour clocks keep "09:00".
+pub fn bare_time(t: NaiveTime) -> String {
+    if !prefs::twelve_hour() {
+        return t.format("%H:%M").to_string();
+    }
+    let h = t.hour() % 12;
+    let h = if h == 0 { 12 } else { h };
+    if t.minute() == 0 { h.to_string() } else { format!("{h}:{:02}", t.minute()) }
+}
+
+/// A range as a block in the grid says it: "10–11:30 AM", "11:30 AM–1 PM".
+pub fn short_range(start: NaiveDateTime, end: NaiveDateTime) -> String {
+    if start == end {
+        return time_text(start.time());
+    }
+    if !prefs::twelve_hour() {
+        return format!("{}–{}", bare_time(start.time()), bare_time(end.time()));
+    }
+    let half = |t: NaiveTime| if t.hour() < 12 { "AM" } else { "PM" };
+    if half(start.time()) == half(end.time()) && start.date() == end.date() {
+        format!("{}–{} {}", bare_time(start.time()), bare_time(end.time()), half(end.time()))
+    } else {
+        format!("{}–{}", time_text(start.time()), time_text(end.time()))
+    }
 }
 
 /// "Wed, Oct 21 · 2 – 3 PM", "Dec 24 – 25", ...

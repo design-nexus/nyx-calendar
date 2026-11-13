@@ -1,9 +1,14 @@
 # Calendar — notes for working on this app
 
-- GTK4 (`gtk4` 0.11, `v4_18`) + Rust, no libadwaita. The window follows Music: a flat
-  sidebar (`hexpand` false, 250 px, icons under 980 px), the page, and a status bar.
-  Settings is `nyx_ui::settings_card`. Colors are `@theme_*` tokens; event colors are
-  the calendars' own, from EDS.
+- GTK4 (`gtk4` 0.11, `v4_18`) + Rust, no libadwaita. The window is `nyx_ui::frame`. The
+  header reads left to right: the sidebar button, Today, the arrows and the range, the
+  view switch; then Quick add (only while it fits: `fit_quick_add`), Find (a search strip
+  over the page) and New event (the editor). The sidebar: the mini month (busy days
+  dotted), each account's calendars as a section of tick boxes in its colour (⋯ for the
+  account card), this computer (+ for a new local calendar), the imported copy, Sets as
+  chips, and the sync state at its foot (click: Refresh). Under 980 px the sidebar is a
+  drawer and the week is five days (`five_days`). Settings is `nyx_ui::settings_card`.
+  Colors are `@theme_*` tokens; event colors are the calendars' own, from EDS.
 - Events, calendars and which calendars are shown belong to Evolution Data Server.
   `worker.rs` owns `nyx_eds::Registry` and the open `Calendar`s on one thread with its
   own GLib main context (EDS signals arrive there) and sends `worker::Update` values to
@@ -23,7 +28,8 @@
   `cargo clippy --workspace --all-targets -- -D warnings`. Layout:
   `CALENDAR_SNAPSHOT=/tmp/cal.png CALENDAR_SNAPSHOT_W=800 nyx-calendar` under scratch
   `XDG_CONFIG_HOME`/`XDG_STATE_HOME` (copy Omarchy's colors.toml in for the real theme).
-  It prints the sidebar width and whether the nav is compact.
+  It prints the sidebar width and whether the nav is compact. `CALENDAR_OPEN_EVENT=<title>`
+  opens that event's popover once the week has loaded (capture it with `grim -T`).
 - Shared crates come from nyx-core on GitHub, pinned by `rev` (Cargo.toml and
   Cargo.lock). To build against unpushed nyx-core changes, push them first and bump the
   rev; never commit a `file://` source (CI refuses it, and the one-line install can't fetch it).

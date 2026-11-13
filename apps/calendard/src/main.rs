@@ -172,6 +172,7 @@ fn write_agenda() -> Result<usize, String> {
                 selected: src.selected,
                 group: src.group,
                 account: src.account,
+                provider: src.backend,
                 needs_sign_in: false,
                 offline: false,
                 read_only: false,
