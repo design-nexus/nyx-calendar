@@ -168,7 +168,23 @@ impl DaysView {
         let adj = self.scroll.vadjustment();
         // A little above the hour, so its label is not cut in half.
         let target = (hour as f64 * HOUR - 12.0).max(0.0);
-        glib::idle_add_local_once(move || adj.set_value(target.min((adj.upper() - adj.page_size()).max(0.0))));
+        let room = |adj: &gtk::Adjustment| adj.upper() - adj.page_size();
+        if room(&adj) > 0.0 {
+            adj.set_value(target.min(room(&adj)));
+            return;
+        }
+        // At launch the view has no height yet: scroll once it has one.
+        let handler: std::rc::Rc<std::cell::RefCell<Option<glib::SignalHandlerId>>> = Default::default();
+        let h = handler.clone();
+        let id = adj.connect_changed(move |adj| {
+            if room(adj) > 0.0 {
+                adj.set_value(target.min(room(adj)));
+                if let Some(id) = h.borrow_mut().take() {
+                    adj.disconnect(id);
+                }
+            }
+        });
+        *handler.borrow_mut() = Some(id);
     }
 
     /// Opens the first event `pick` likes as if it were clicked; false if none is drawn.
