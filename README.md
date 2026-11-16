@@ -1,13 +1,7 @@
-> Development branch: Online Accounts now uses the isolated native preview.
-> Runtime EDS/EWS dependencies have been replaced by `nyx-pim` and libical.
-> Existing EDS data is retained and can be explicitly exported/imported with
-> `nyx-pim-migrate`. Provider and migration limitations are tracked in
-> the sibling `nyx-accounts/docs/IMPLEMENTATION.md`; this branch is not merge-ready.
-
 # Calendar
 
-A calendar for Omarchy: the calendars from your Google, personal Microsoft,
-Nextcloud and other online accounts, and calendars kept on this computer, in one week view. Part of the
+A calendar for Omarchy: the calendars from your iCloud, Fastmail,
+Nextcloud and other CalDAV accounts, and calendars kept on this computer, in one week view. Part of the
 [Nyx](https://github.com/design-nexus/nyx) apps.
 
 - Day, week, month and agenda views, with a month in the sidebar
@@ -20,10 +14,11 @@ Nextcloud and other online accounts, and calendars kept on this computer, in one
 - Works offline from the saved copy and catches up when you're back online
 - Follows your Omarchy theme; works from the keyboard and tiled at half-screen
 
-Accounts are added in **Settings → Online Accounts**. This feature branch uses
-native account authentication and an isolated SQLite calendar store with libical.
-Personal Microsoft accounts use Graph; EWS and enterprise accounts are unsupported.
-Existing EDS stores remain untouched and can be copied through the explicit migration tool.
+Accounts are added in **Settings → Online Accounts**, with an app password for CalDAV
+servers. Google and personal Microsoft calendars need an OAuth client you register with
+them yourself; work and school (EWS) accounts aren't supported. Events are kept on this
+computer in a SQLite store; calendars from the older Evolution store are left as they
+were and can be copied over with `nyx-pim-migrate`.
 
 ## Install
 
