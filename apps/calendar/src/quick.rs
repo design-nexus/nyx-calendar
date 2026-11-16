@@ -87,7 +87,7 @@ pub fn show(parent: &gtk::Widget, rect: gtk::gdk::Rectangle, slot: Option<Slot>)
 pub fn field() -> gtk::Entry {
     let entry = gtk::Entry::new();
     entry.add_css_class("quick-add");
-    entry.set_placeholder_text(Some("Add “Lunch with Sam at 1”"));
+    entry.set_placeholder_text(Some("Lunch at 1"));
     entry.set_primary_icon_name(Some("list-add-symbolic"));
     entry.set_tooltip_text(Some("Quick add (Q): what and when, then Enter"));
     entry.update_property(&[gtk::accessible::Property::Label("Quick add: what and when")]);
