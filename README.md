@@ -17,8 +17,8 @@ Nextcloud and other CalDAV accounts, and calendars kept on this computer, in one
 Accounts are added in **Settings → Online Accounts**, with an app password for CalDAV
 servers. Google and personal Microsoft calendars need an OAuth client you register with
 them yourself; work and school (EWS) accounts aren't supported. Events are kept on this
-computer in a SQLite store; calendars from the older Evolution store are left as they
-were and can be copied over with `nyx-pim-migrate`.
+computer in a SQLite store. On Omarchy, calendars from the older Evolution store are
+left as they were and can be copied over with `nyx-pim-migrate`.
 
 ## Install
 

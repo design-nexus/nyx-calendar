@@ -31,8 +31,8 @@ kept on this computer. Shared foundation: [nyx-core docs/pim](https://github.com
 - [x] Search (this view as you type; Enter searches a year either side)
 - [x] `.ics` import (file picker, command line, Open with) and export
 - [x] Control tools for Assistant
-- [ ] Time zone choice per event (events are written in the local zone)
-- [ ] Moving an event to another calendar
+- [x] Time zone choice per event
+- [x] Moving an event (its whole series) to another calendar, with Undo
 
 ### 3. Advanced
 - [x] Year view (twelve months, days with events marked; Y)
