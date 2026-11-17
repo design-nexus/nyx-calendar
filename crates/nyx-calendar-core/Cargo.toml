@@ -10,4 +10,4 @@ repository.workspace = true
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
-nyx-eds = { package = "nyx-pim", git = "https://github.com/design-nexus/nyx-core.git", rev = "07e4b029c70a1f359fa68e8cca30308dd582c090" }
+nyx-eds = { package = "nyx-pim", git = "https://github.com/design-nexus/nyx-core.git", rev = "2e7937ebd156a1df7d92457f9a3b35aecfc22ac9" }
